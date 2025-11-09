@@ -1,52 +1,41 @@
-from __future__ import annotations
+﻿from __future__ import annotations
+
 import os
-import sys
 from logging.config import fileConfig
+
 from alembic import context
-from sqlalchemy import engine_from_config, pool, MetaData
-from dotenv import load_dotenv
-from configparser import RawConfigParser  # Evita conflitti con '%'
+from sqlalchemy import engine_from_config, pool
 
-# ============================================================
-#  VoiceGuide.it AirLink — Alembic Environment
-# ============================================================
-
-# Carica variabili dal file .env nella root del progetto
-load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
-
-# Aggiunge la root del progetto al path per permettere gli import di app/*
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
-# Importa i modelli principali (serve per autogenerate)
-from app.db.base import Base
-from app.models import license, session, listener, event  # 👈 incluso anche event
-
-# ------------------------------------------------------------
-# Configurazione Alembic
-# ------------------------------------------------------------
+# Config Alembic
 config = context.config
-config.file_config = RawConfigParser()  # Disattiva l’interpolazione di '%'
 
-# Recupera DATABASE_URL dall'ambiente
-DATABASE_URL = os.getenv("DATABASE_URL")
-if not DATABASE_URL:
-    raise RuntimeError("DATABASE_URL non trovata nel file .env")
-
-# Imposta la URL nel file di configurazione Alembic
-config.set_main_option("sqlalchemy.url", DATABASE_URL)
-
-# Logger Alembic
+# Leggi logging da alembic.ini (se configurato)
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Metadati target per autogenerate
-target_metadata = Base.metadata or MetaData()
+# Prova a importare la Base metadata (per autogenerate). Fallback a None.
+target_metadata = None
+for _candidate in [
+    "app.db.base:Base",
+    "app.db.models:Base",
+    "app.models:Base",
+]:
+    try:
+        module_path, attr = _candidate.split(":")
+        mod = __import__(module_path, fromlist=[attr])
+        target_metadata = getattr(mod, attr)
+        break
+    except Exception:
+        pass
 
-# ============================================================
-#  MIGRAZIONI OFFLINE
-# ============================================================
+# Imposta sqlalchemy.url da env se presente (es. Railway)
+db_url = os.environ.get("DATABASE_URL")
+if db_url:
+    # Alembic usa questa opzione per creare l'engine
+    config.set_main_option("sqlalchemy.url", db_url)
+
 def run_migrations_offline() -> None:
-    """Esegue le migrazioni senza connessione DB."""
+    """Esegue migrazioni in modalità 'offline'."""
     url = config.get_main_option("sqlalchemy.url")
     context.configure(
         url=url,
@@ -56,21 +45,16 @@ def run_migrations_offline() -> None:
         compare_type=True,
         compare_server_default=True,
     )
-
     with context.begin_transaction():
         context.run_migrations()
 
-# ============================================================
-#  MIGRAZIONI ONLINE
-# ============================================================
 def run_migrations_online() -> None:
-    """Esegue le migrazioni con connessione DB attiva."""
+    """Esegue migrazioni in modalità 'online'."""
     connectable = engine_from_config(
         config.get_section(config.config_ini_section),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
-
     with connectable.connect() as connection:
         context.configure(
             connection=connection,
@@ -78,13 +62,9 @@ def run_migrations_online() -> None:
             compare_type=True,
             compare_server_default=True,
         )
-
         with context.begin_transaction():
             context.run_migrations()
 
-# ============================================================
-#  ESECUZIONE
-# ============================================================
 if context.is_offline_mode():
     run_migrations_offline()
 else:

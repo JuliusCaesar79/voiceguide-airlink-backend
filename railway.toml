@@ -1,15 +1,10 @@
-# railway.toml - VoiceGuide AirLink
-# Config per il deploy su Railway
-
+﻿# ---- Railway app config ----
 [build]
-# (vuoto: usiamo Dockerfile presente in repo)
+builder = "Dockerfile"
 
 [deploy]
-# Endpoint leggero per healthcheck (montato sotto /api nel router principale)
+# Your API health endpoint (already implemented)
 healthcheckPath = "/api/healthz"
-# (opzionale) tempo di attesa prima di iniziare gli healthcheck, utile su cold start
-healthcheckTimeout = 300
-
-# Se preferisci avviare senza Dockerfile, potresti usare:
-# startCommand = "uvicorn main:app --host 0.0.0.0 --port ${PORT}"
-# ma siccome stiamo usando Dockerfile, Railway ignorerà startCommand.
+healthcheckTimeout = 180
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3
