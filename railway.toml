@@ -1,13 +1,15 @@
-
-# --- VoiceGuide AirLink — railway.toml ---
-[build]
-builder = "Docker"
-
-[deploy]
-startCommand = "uvicorn app.main:app --host 0.0.0.0 --port 8000"
-healthcheckPath = "/api/health"
-healthcheckTimeout = 100
+# railway.toml
 
 [service]
-numReplicas = 1
-restartPolicyType = "ON_FAILURE"
+name = "voiceguide-airlink-backend"
+
+[build]
+# Usa il Dockerfile del repo
+builder = "dockerfile"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+# facoltative ma utili:
+healthcheckPath = "/api/health"
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3
