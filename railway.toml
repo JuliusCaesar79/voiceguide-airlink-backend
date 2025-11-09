@@ -4,7 +4,7 @@ builder = "Dockerfile"
 
 [deploy]
 # Your API health endpoint (already implemented)
-healthcheckPath = "/api/healthz"
+healthcheckPath = "/openapi.json"
 healthcheckTimeout = 180
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 3
