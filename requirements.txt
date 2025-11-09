@@ -7,3 +7,4 @@ alembic==1.13.3
 psycopg[binary]==3.2.3
 passlib[bcrypt]==1.7.4
 redis==5.0.8
+psycopg2-binary>=2.9
