@@ -1,15 +1,15 @@
-# railway.toml
-
-[service]
-name = "voiceguide-airlink-backend"
+# railway.toml - VoiceGuide AirLink
+# Config per il deploy su Railway
 
 [build]
-# Usa il Dockerfile del repo
-builder = "dockerfile"
-dockerfilePath = "Dockerfile"
+# (vuoto: usiamo Dockerfile presente in repo)
 
 [deploy]
-# facoltative ma utili:
-healthcheckPath = "/api/health"
-restartPolicyType = "on_failure"
-restartPolicyMaxRetries = 3
+# Endpoint leggero per healthcheck (montato sotto /api nel router principale)
+healthcheckPath = "/api/healthz"
+# (opzionale) tempo di attesa prima di iniziare gli healthcheck, utile su cold start
+healthcheckTimeout = 300
+
+# Se preferisci avviare senza Dockerfile, potresti usare:
+# startCommand = "uvicorn main:app --host 0.0.0.0 --port ${PORT}"
+# ma siccome stiamo usando Dockerfile, Railway ignorerà startCommand.

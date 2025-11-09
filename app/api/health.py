@@ -7,11 +7,12 @@ from datetime import datetime, timezone
 from app.db.session import get_db
 from app.models.session import Session as SessionModel
 from app.models.listener import Listener
-from app.models.event import Event  # ✅ import aggiunto per conteggio eventi recenti
+from app.models.event import Event  # ✅ import per conteggio eventi recenti
 
 router = APIRouter(tags=["health"])
 
 START_TIME = datetime.now(timezone.utc)
+
 
 @router.get("/health")
 def health(db: Session = Depends(get_db)):
@@ -82,3 +83,12 @@ def health(db: Session = Depends(get_db)):
         "recent_events": recent_events_count,
         "now": datetime.now(timezone.utc).isoformat(),
     }
+
+
+@router.get("/healthz")
+def healthz():
+    """
+    Healthcheck leggero (non tocca il DB).
+    Usato da Railway per determinare che il container è up.
+    """
+    return {"status": "ok"}
