@@ -1,0 +1,20 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+.env.*
+.env.local
+# IDE
+.vscode/
+.idea/
+# Byte-compiled / caches
+*.log
+# Dist
+dist/
+build/
+# OS
+Thumbs.db
+.DS_Store

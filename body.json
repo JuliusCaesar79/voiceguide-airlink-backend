@@ -1,0 +1,10 @@
+{
+    "event_type":  "listener_joined",
+    "payload":  {
+                    "created_at":  "2025-11-08T10:28:04.4728947Z",
+                    "listener_id":  "16d63aeb-b1d1-4e34-8856-ed021bf1cb65",
+                    "session_id":  "d19f183c-665e-40d6-b203-1464d8999621",
+                    "id":  "8df6fbc5-39c6-4068-963a-3c88742170a5",
+                    "type":  "listener_joined"
+                }
+}
