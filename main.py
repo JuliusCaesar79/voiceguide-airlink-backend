@@ -38,7 +38,7 @@ def create_app() -> FastAPI:
     """Crea e configura l'applicazione FastAPI VoiceGuide AirLink."""
     app = FastAPI(
         title="VoiceGuide AirLink API",
-        version="1.0.4",  # bump minimale
+        version="1.0.4",
         description=(
             "Backend ufficiale per VoiceGuide.it AirLink — "
             "gestione licenze, sessioni live e connessioni guidate tra "
@@ -55,20 +55,17 @@ def create_app() -> FastAPI:
     )
 
     # --------------------------------------------------------
-    # CORS (per connessioni da app mobile e web client)
+    # CORS
     # --------------------------------------------------------
     ALLOWED_ORIGINS = [
-        # Prod
         "https://voiceguide.it",
         "https://www.voiceguide.it",
-        # Dev
         "http://localhost",
         "http://localhost:3000",
         "http://127.0.0.1:3000",
         "http://127.0.0.1",
     ]
 
-    # Override opzionale: VOICEGUIDE_CORS_EXTRA="https://my.frontend.app,https://demo.example.com"
     extra = os.getenv("VOICEGUIDE_CORS_EXTRA")
     if extra:
         for item in [x.strip() for x in extra.split(",") if x.strip()]:
@@ -84,12 +81,12 @@ def create_app() -> FastAPI:
     )
 
     # --------------------------------------------------------
-    # ROUTES PRINCIPALI (AirLink API Core)
+    # ROUTES PRINCIPALI
     # --------------------------------------------------------
     app.include_router(api_router, prefix="")
 
     # --------------------------------------------------------
-    # ROUTES ADDON (Stats, Export CSV, Health, Notify, Webhook Test)
+    # ROUTES ADDON
     # --------------------------------------------------------
     app.include_router(stats.router)
     app.include_router(events_export_router)
@@ -98,16 +95,11 @@ def create_app() -> FastAPI:
     app.include_router(webhook_test_router)
 
     # --------------------------------------------------------
-    # ROUTES AMMINISTRATIVE LIVE (monitoraggio eventi)
+    # ROUTES ADMIN
     # --------------------------------------------------------
     app.include_router(admin_live_router)
     app.include_router(admin_events_router)
-
-    # --------------------------------------------------------
-    # NEW ✅ ROUTES ADMIN UNIFICATE
-    # (il router admin definisce già i propri prefix/tag internamente)
-    # --------------------------------------------------------
-    app.include_router(admin_api.router)  # NEW
+    app.include_router(admin_api.router)
 
     # --------------------------------------------------------
     # ROOT DI SERVIZIO
@@ -122,7 +114,15 @@ def create_app() -> FastAPI:
         }
 
     # --------------------------------------------------------
-    # EVENTI DI AVVIO / ARRESTO (Scheduler retry automatico)
+    # NEW 🩺 HEALTHZ ENDPOINT
+    # --------------------------------------------------------
+    @app.get("/api/healthz", tags=["system"])
+    async def healthz():
+        """Endpoint di verifica automatica per Railway e monitoring."""
+        return {"status": "ok", "service": "voiceguide-airlink-backend"}
+
+    # --------------------------------------------------------
+    # EVENTI DI AVVIO / ARRESTO
     # --------------------------------------------------------
     @app.on_event("startup")
     async def _on_startup():
@@ -136,12 +136,12 @@ def create_app() -> FastAPI:
 
 
 # ------------------------------------------------------------
-# ISTANZA APPLICAZIONE (usata da uvicorn / Gunicorn / Railway)
+# ISTANZA APPLICAZIONE
 # ------------------------------------------------------------
 app = create_app()
 
 # ------------------------------------------------------------
-# AVVIO LOCALE (sviluppo)
+# AVVIO LOCALE
 # ------------------------------------------------------------
 if __name__ == "__main__":
     import uvicorn

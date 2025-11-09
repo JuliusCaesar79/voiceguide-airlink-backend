@@ -6,14 +6,11 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-# Config Alembic
 config = context.config
 
-# Leggi logging da alembic.ini (se configurato)
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Prova a importare la Base metadata (per autogenerate). Fallback a None.
 target_metadata = None
 for _candidate in [
     "app.db.base:Base",
@@ -28,14 +25,21 @@ for _candidate in [
     except Exception:
         pass
 
-# Imposta sqlalchemy.url da env se presente (es. Railway)
-db_url = os.environ.get("DATABASE_URL")
+def _normalize_dsn(url: str) -> str:
+    if not url:
+        return url
+    # Railway può fornire postgres:// oppure postgresql://
+    if url.startswith("postgres://"):
+        url = "postgresql+psycopg://" + url[len("postgres://"):]
+    elif url.startswith("postgresql://") and "+psycopg" not in url:
+        url = "postgresql+psycopg://" + url[len("postgresql://"):]
+    return url
+
+db_url = _normalize_dsn(os.environ.get("DATABASE_URL"))
 if db_url:
-    # Alembic usa questa opzione per creare l'engine
     config.set_main_option("sqlalchemy.url", db_url)
 
 def run_migrations_offline() -> None:
-    """Esegue migrazioni in modalità 'offline'."""
     url = config.get_main_option("sqlalchemy.url")
     context.configure(
         url=url,
@@ -49,7 +53,6 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 def run_migrations_online() -> None:
-    """Esegue migrazioni in modalità 'online'."""
     connectable = engine_from_config(
         config.get_section(config.config_ini_section),
         prefix="sqlalchemy.",
