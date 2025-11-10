@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import os
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
+from sqlalchemy.orm import Session
 
 # ------------------------------------------------------------
 # IMPORT ROUTER PRINCIPALI E ADDON
@@ -11,23 +13,25 @@ from fastapi.middleware.cors import CORSMiddleware
 # Core API centralizzata (licenze, sessioni, join, ecc.)
 from app.api.routes import router as api_router
 
-# Addon API (stats) — rimosso admin_licenses per evitare conflitti
+# Addon API (stats)
 from app.api import stats
 
-# NEW ✅: Router Admin unificato (/api/admin/overview, /api/admin/licenses, azioni)
-from app.api import admin as admin_api  # NEW
+# Router Admin unificato (/api/admin/overview, /api/admin/licenses, azioni)
+from app.api import admin as admin_api
 
-# Routers aggiuntivi (Export CSV, Webhook Test, Health, Admin Notify)
+# Routers aggiuntivi (Export CSV, Webhook Test, Admin Notify)
 from app.routers.events_export import router as events_export_router
 from app.routers.webhook_test import router as webhook_test_router
-from app.routers.health import router as health_router
 from app.routers.admin_notify import router as admin_notify_router
 
 # Routers amministrativi avanzati
 from app.routers.admin_live import router as admin_live_router
 from app.routers.admin_events import router as admin_events_router
 
-# NEW ⚙️: Scheduler automatico di retry eventi
+# DB session
+from app.db.session import get_db
+
+# Scheduler automatico di retry eventi
 from app.core.scheduler import start_scheduler, stop_scheduler
 
 
@@ -36,9 +40,11 @@ from app.core.scheduler import start_scheduler, stop_scheduler
 # ------------------------------------------------------------
 def create_app() -> FastAPI:
     """Crea e configura l'applicazione FastAPI VoiceGuide AirLink."""
+    app_version = os.getenv("APP_VERSION", "dev")
+
     app = FastAPI(
         title="VoiceGuide AirLink API",
-        version="1.0.4",
+        version=app_version,
         description=(
             "Backend ufficiale per VoiceGuide.it AirLink — "
             "gestione licenze, sessioni live e connessioni guidate tra "
@@ -90,7 +96,6 @@ def create_app() -> FastAPI:
     # --------------------------------------------------------
     app.include_router(stats.router)
     app.include_router(events_export_router)
-    app.include_router(health_router)
     app.include_router(admin_notify_router)
     app.include_router(webhook_test_router)
 
@@ -109,17 +114,46 @@ def create_app() -> FastAPI:
         return {
             "status": "online",
             "service": "VoiceGuide AirLink API",
-            "version": "1.0.4",
+            "version": app_version,
             "message": "AVE SEMPER! ⚔️ La connessione è attiva.",
         }
 
     # --------------------------------------------------------
-    # NEW 🩺 HEALTHZ ENDPOINT
+    # VERSION
+    # --------------------------------------------------------
+    @app.get("/api/version", tags=["system"])
+    def version():
+        """Versione dell'applicazione (gestita via env APP_VERSION)."""
+        return {"version": app_version}
+
+    # --------------------------------------------------------
+    # 🩺 HEALTHZ ENDPOINT (API + DB PING)
     # --------------------------------------------------------
     @app.get("/api/healthz", tags=["system"])
-    async def healthz():
-        """Endpoint di verifica automatica per Railway e monitoring."""
-        return {"status": "ok", "service": "voiceguide-airlink-backend"}
+    def healthz(db: Session = Depends(get_db)):
+        """
+        Endpoint di verifica automatica per Railway e monitoring.
+        Controlla sia l'API sia la reachability del DB.
+        """
+        try:
+            db.execute(text("SELECT 1"))
+            return {
+                "status": "ok",
+                "service": "voiceguide-airlink-backend",
+                "db": "ok",
+                "version": app_version,
+            }
+        except Exception as e:
+            # 503 = Service Unavailable
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "status": "degraded",
+                    "db": "error",
+                    "error": str(e),
+                    "version": app_version,
+                },
+            )
 
     # --------------------------------------------------------
     # EVENTI DI AVVIO / ARRESTO
