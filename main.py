@@ -13,8 +13,9 @@ from sqlalchemy.orm import Session
 # Core API centralizzata (licenze, sessioni, join, ecc.)
 from app.api.routes import router as api_router
 
-# Addon API (stats)
+# Addon API (stats e serie temporale)
 from app.api import stats
+from app.api import stats_series  # ⬅️ NUOVO
 
 # Router Admin unificato (/api/admin/overview, /api/admin/licenses, azioni)
 from app.api import admin as admin_api
@@ -95,6 +96,7 @@ def create_app() -> FastAPI:
     # ROUTES ADDON
     # --------------------------------------------------------
     app.include_router(stats.router)
+    app.include_router(stats_series.router)  # ⬅️ NUOVO
     app.include_router(events_export_router)
     app.include_router(admin_notify_router)
     app.include_router(webhook_test_router)
@@ -144,7 +146,6 @@ def create_app() -> FastAPI:
                 "version": app_version,
             }
         except Exception as e:
-            # 503 = Service Unavailable
             raise HTTPException(
                 status_code=503,
                 detail={
