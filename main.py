@@ -15,7 +15,7 @@ from app.api.routes import router as api_router
 
 # Addon API (stats e serie temporale)
 from app.api import stats
-from app.api import stats_series  # ⬅️ NUOVO
+from app.api import stats_series  # KPI time series
 
 # Router Admin unificato (/api/admin/overview, /api/admin/licenses, azioni)
 from app.api import admin as admin_api
@@ -42,6 +42,7 @@ from app.core.scheduler import start_scheduler, stop_scheduler
 def create_app() -> FastAPI:
     """Crea e configura l'applicazione FastAPI VoiceGuide AirLink."""
     app_version = os.getenv("APP_VERSION", "dev")
+    app_env_local = os.getenv("APP_ENV", "production")
 
     app = FastAPI(
         title="VoiceGuide AirLink API",
@@ -96,7 +97,7 @@ def create_app() -> FastAPI:
     # ROUTES ADDON
     # --------------------------------------------------------
     app.include_router(stats.router)
-    app.include_router(stats_series.router)  # ⬅️ NUOVO
+    app.include_router(stats_series.router)
     app.include_router(events_export_router)
     app.include_router(admin_notify_router)
     app.include_router(webhook_test_router)
@@ -117,6 +118,7 @@ def create_app() -> FastAPI:
             "status": "online",
             "service": "VoiceGuide AirLink API",
             "version": app_version,
+            "env": app_env_local,
             "message": "AVE SEMPER! ⚔️ La connessione è attiva.",
         }
 

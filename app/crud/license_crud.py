@@ -1,37 +1,70 @@
 # app/crud/license_crud.py
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 from datetime import timedelta
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
+from sqlalchemy.exc import IntegrityError
 
 from app.models.license import License
 from app.models.session import Session as SessionModel
 from app.models.listener import Listener
 from app.core.utils import gen_pin, utcnow, compute_expiry
-from sqlalchemy.exc import IntegrityError
 
 PIN_GENERATION_TRIES = 6
+
+# Set coerente con il vincolo DB (ck_license_max_listeners_allowed)
+ALLOWED_MAX_LISTENERS = {10, 25, 50, 100}
 
 # =========================
 #  LOOKUP / ACTIVATION
 # =========================
-def get_license_by_code(db: Session, code: str):
+def get_license_by_code(db: Session, code: str) -> Optional[License]:
     return db.query(License).filter(License.code == code).first()
 
-def activate_license(db: Session, code: str):
+def activate_license(db: Session, code: str) -> Tuple[Optional[License], Optional[int] | str]:
+    """
+    Attiva o verifica una licenza e restituisce (License, remaining_minutes).
+    Ritorna (None, "license_not_found") se il codice non esiste.
+    - Se la licenza non è attiva, la attiva e imposta activated_at = now.
+    - Se è la prima attivazione (activated_at is None) calcola remaining = duration_minutes.
+    - Altrimenti remaining = duration_minutes - elapsed.
+    """
     lic = get_license_by_code(db, code)
     if not lic:
         return None, "license_not_found"
+
     now = utcnow()
-    if not lic.is_active:
+
+    # durata di fallback se il campo non esiste o è null
+    duration_minutes = int(getattr(lic, "duration_minutes", 240) or 240)
+
+    # se la licenza non è attiva -> attiva e marca activated_at ora
+    if not getattr(lic, "is_active", True):
         lic.is_active = True
-        lic.activated_at = now
+
+    # prima attivazione: se activated_at è None, impostalo adesso
+    if getattr(lic, "activated_at", None) is None:
+        if hasattr(lic, "activated_at"):
+            lic.activated_at = now
+        if hasattr(lic, "updated_at"):
+            lic.updated_at = now
         db.add(lic)
         db.commit()
         db.refresh(lic)
-    # compute remaining minutes
-    elapsed = (now - lic.activated_at).total_seconds() / 60.0
-    remaining = max(0, int(lic.duration_minutes - elapsed))
+        return lic, duration_minutes
+
+    # ri-attivazione/controllo con activated_at già valorizzato
+    activated_at = lic.activated_at
+    elapsed_minutes = max(0, int((now - activated_at).total_seconds() / 60.0))
+    remaining = max(0, duration_minutes - elapsed_minutes)
+
+    # opzionale: aggiorna updated_at
+    if hasattr(lic, "updated_at"):
+        lic.updated_at = now
+        db.add(lic)
+        db.commit()
+        db.refresh(lic)
+
     return lic, remaining
 
 # =========================
@@ -39,28 +72,33 @@ def activate_license(db: Session, code: str):
 # =========================
 def start_session_for_license(db: Session, license_obj: License, requested_max_listeners: int = None):
     now = utcnow()
-    # check license active & not expired
-    if not license_obj.is_active or not license_obj.activated_at:
+
+    # check license attiva e marcata come attivata
+    if not getattr(license_obj, "is_active", True) or not getattr(license_obj, "activated_at", None):
         return None, "license_not_active"
+
+    duration_minutes = int(getattr(license_obj, "duration_minutes", 240) or 240)
     elapsed = (now - license_obj.activated_at).total_seconds() / 60.0
-    if elapsed >= license_obj.duration_minutes:
+    if elapsed >= duration_minutes:
         license_obj.is_active = False
         db.add(license_obj)
         db.commit()
         return None, "license_expired"
 
-    max_listeners = requested_max_listeners or license_obj.max_listeners
-    if max_listeners not in (10, 25, 35, 100):
+    # valida max_listeners in base al vincolo DB
+    default_ml = int(getattr(license_obj, "max_listeners", 10) or 10)
+    max_listeners = int(requested_max_listeners or default_ml)
+    if max_listeners not in ALLOWED_MAX_LISTENERS:
         return None, "invalid_max_listeners"
 
-    # create unique PIN
+    # genera PIN univoco
     pin = None
     for _ in range(PIN_GENERATION_TRIES):
         candidate = gen_pin(6)
         exists = (
             db.query(SessionModel)
-              .filter(SessionModel.pin == candidate, SessionModel.is_active == True)
-              .first()
+            .filter(SessionModel.pin == candidate, SessionModel.is_active == True)
+            .first()
         )
         if not exists:
             pin = candidate
@@ -68,7 +106,8 @@ def start_session_for_license(db: Session, license_obj: License, requested_max_l
     if not pin:
         return None, "pin_generation_failed"
 
-    expires_at = compute_expiry(now, license_obj.duration_minutes - int(elapsed))
+    remaining_minutes = max(0, int(duration_minutes - int(elapsed)))
+    expires_at = compute_expiry(now, remaining_minutes)
 
     session = SessionModel(
         license_id=license_obj.id,
@@ -93,7 +132,7 @@ def join_session_by_pin(db: Session, pin: str, display_name: str = None):
     ).first()
     if not session:
         return None, "session_not_found"
-    # check expiry
+
     now = utcnow()
     if session.expires_at <= now:
         session.is_active = False
@@ -116,6 +155,9 @@ def end_session(db: Session, session_id):
     if not s:
         return False
     s.is_active = False
+    # marca la fine sessione se il campo esiste (supporto KPI)
+    if hasattr(s, "ended_at"):
+        s.ended_at = utcnow()
     db.add(s)
     db.commit()
     return True
@@ -193,7 +235,6 @@ def admin_revoke(db: Session, license_id: str) -> Optional[License]:
       - imposta is_active = False
       - se esiste il campo revoked_at, lo valorizza a ora UTC
     """
-    # SQLAlchemy 1.4 compat: .query(...).get(...)
     lic = db.query(License).get(license_id)
     if not lic:
         return None
