@@ -118,12 +118,15 @@ def export_events_csv(
     if not _table_exists(db, "sessions"):
         def rows_empty():
             yield {"info": "sessions table not found in this schema"}
-        return StreamingResponse(_iter_csv(rows_empty()), media_type="text/csv; charset=utf-8",
-                                 headers={"Content-Disposition": "attachment; filename=events_empty.csv"})
+        return StreamingResponse(
+            _iter_csv(rows_empty()), media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": "attachment; filename=events_empty.csv"}
+        )
 
     # sessions columns
     has_started_at = _has_col(db, "sessions", "started_at")
     has_ended_at   = _has_col(db, "sessions", "ended_at")
+    has_expires_at = _has_col(db, "sessions", "expires_at")  # NEW: fallback
     has_listeners  = _has_col(db, "sessions", "listeners_count")
     has_peak       = _has_col(db, "sessions", "peak_concurrency")
     has_status     = _has_col(db, "sessions", "status")
@@ -157,8 +160,10 @@ def export_events_csv(
         if not has_joins:
             def rows_empty():
                 yield {"info": "joins table not found in this schema"}
-            return StreamingResponse(_iter_csv(rows_empty()), media_type="text/csv; charset=utf-8",
-                                     headers={"Content-Disposition": "attachment; filename=events_joins.csv"})
+            return StreamingResponse(
+                _iter_csv(rows_empty()), media_type="text/csv; charset=utf-8",
+                headers={"Content-Disposition": "attachment; filename=events_joins.csv"}
+            )
 
         # join columns detection
         j_has_joined_at = _has_col(db, "joins", "joined_at")
@@ -169,10 +174,11 @@ def export_events_csv(
         j_has_city      = _has_col(db, "joins", "city")
         j_has_country   = _has_col(db, "joins", "country")
 
-        ended_col = "s.ended_at" if has_ended_at else ("se.ended_at" if has_events else "NULL::timestamp")
+        # ended_at fallback: sessions.ended_at -> sessions.expires_at -> events -> NULL
+        ended_col = "s.ended_at" if has_ended_at else ("s.expires_at" if has_expires_at else None)
         ended_cte = ""
         ended_join = ""
-        if not has_ended_at and has_events:
+        if not ended_col and has_events:
             ended_cte = """
             ended AS (
                 SELECT e.session_id, MAX(e.created_at) AS ended_at
@@ -182,6 +188,9 @@ def export_events_csv(
             )
             """
             ended_join = "LEFT JOIN ended se ON se.session_id = s.id"
+            ended_col = "se.ended_at"
+        if not ended_col:
+            ended_col = "NULL::timestamp"
 
         listen_seconds = (
             "COALESCE(EXTRACT(EPOCH FROM (j.left_at - j.joined_at)),0)::bigint"
@@ -220,10 +229,13 @@ def export_events_csv(
     # Modalità SESSIONS (riassunto)
     # ==============================
     else:
-        # ended_at ricostruito se non presente
+        # ended_at fallback: sessions.ended_at -> sessions.expires_at -> events -> NULL
         ended_cte, ended_join = "", ""
-        ended_col = "s.ended_at"
-        if not has_ended_at and has_events:
+        if has_ended_at:
+            ended_col = "s.ended_at"
+        elif has_expires_at:
+            ended_col = "s.expires_at"
+        elif has_events:
             ended_cte = """
             ended AS (
                 SELECT e.session_id, MAX(e.created_at) AS ended_at
@@ -234,7 +246,7 @@ def export_events_csv(
             """
             ended_join = "LEFT JOIN ended se ON se.session_id = s.id"
             ended_col = "se.ended_at"
-        elif not has_ended_at:
+        else:
             ended_col = "NULL::timestamp"
 
         # --- listeners_count: precedence sessions -> joins -> events.payload
@@ -256,7 +268,7 @@ def export_events_csv(
                 SELECT e.session_id, MAX( (e.payload->>'listeners_count')::int ) AS listeners_count
                 FROM events e
                 WHERE e.type = 'session_ended'
-                GROUP BY e.session_id
+                GROUP BY session_id
             )
             """
             listeners_join = "LEFT JOIN events_listeners el ON el.session_id = s.id"
@@ -316,6 +328,50 @@ def export_events_csv(
         for r in res.mappings():
             yield dict(r)
 
-    fname = "events.csv" if not from_ and not to else f"events_{from_ or 'all'}_{to or 'now'}.csv"
+    # filename
+    f_from = (str(from_).replace(":", "-").replace(" ", "_")) if from_ else "all"
+    f_to   = (str(to).replace(":", "-").replace(" ", "_"))   if to   else "now"
+    fname = "events.csv" if (f_from == "all" and f_to == "now") else f"events_{f_from}_{f_to}.csv"
+
     hdrs = {"Content-Disposition": f"attachment; filename={fname}"}
     return StreamingResponse(_iter_csv(row_iter()), media_type="text/csv; charset=utf-8", headers=hdrs)
+
+
+# -------------------------------------------------------------------
+# Nuove rotte senza conflitti (riusano la funzione principale)
+# -------------------------------------------------------------------
+
+@router.get(
+    "/api/admin/export.sessions.csv",
+    tags=["admin"],
+    name="export_sessions_csv",
+    operation_id="export_sessions_csv",
+    response_class=PlainTextResponse,
+    summary="Esporta SESSIONI (riassunto) in CSV"
+)
+def export_sessions_csv(
+    from_: Optional[Union[datetime, date]] = Query(None, alias="from"),
+    to: Optional[Union[datetime, date]] = Query(None),
+    guide_id: Optional[UUID] = Query(None),
+    db: Session = Depends(get_db),
+    user = Depends(current_user),
+):
+    return export_events_csv(from_=from_, to=to, guide_id=guide_id, include_joins=False, db=db, user=user)
+
+
+@router.get(
+    "/api/admin/export.joins.csv",
+    tags=["admin"],
+    name="export_joins_csv",
+    operation_id="export_joins_csv",
+    response_class=PlainTextResponse,
+    summary="Esporta JOINS (dettaglio connessioni) in CSV"
+)
+def export_joins_csv(
+    from_: Optional[Union[datetime, date]] = Query(None, alias="from"),
+    to: Optional[Union[datetime, date]] = Query(None),
+    guide_id: Optional[UUID] = Query(None),
+    db: Session = Depends(get_db),
+    user = Depends(current_user),
+):
+    return export_events_csv(from_=from_, to=to, guide_id=guide_id, include_joins=True, db=db, user=user)

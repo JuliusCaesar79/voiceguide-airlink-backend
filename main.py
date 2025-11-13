@@ -17,8 +17,11 @@ from app.api.routes import router as api_router
 from app.api import stats
 from app.api import stats_series  # KPI time series
 
-# Router Admin unificato (/api/admin/overview, /api/admin/licenses, azioni)
+# Router Admin unificato (eventuali endpoint già presenti /api/admin/*)
 from app.api import admin as admin_api
+
+# 👉 NEW: Admin Overview minimal (/api/admin/overview)
+from app.api.admin_overview import router as admin_overview_router
 
 # Routers aggiuntivi (Export CSV, Webhook Test, Admin Notify)
 from app.routers.events_export import router as events_export_router
@@ -28,6 +31,9 @@ from app.routers.admin_notify import router as admin_notify_router
 # Routers amministrativi avanzati
 from app.routers.admin_live import router as admin_live_router
 from app.routers.admin_events import router as admin_events_router
+
+# 🆕 Webhook HMAC receiver (nuovo modulo)
+from app.routers.events_receive import router as events_receive_router
 
 # DB session
 from app.db.session import get_db
@@ -102,9 +108,16 @@ def create_app() -> FastAPI:
     app.include_router(admin_notify_router)
     app.include_router(webhook_test_router)
 
+    # 🆕 Webhook HMAC receive
+    app.include_router(events_receive_router, prefix="/api/events")
+
     # --------------------------------------------------------
     # ROUTES ADMIN
     # --------------------------------------------------------
+    # Admin overview minimale protetto da X-Admin-Key (se ADMIN_KEY/ADMIN_API_KEY è settata)
+    app.include_router(admin_overview_router)
+
+    # Eventuali altri router admin già esistenti
     app.include_router(admin_live_router)
     app.include_router(admin_events_router)
     app.include_router(admin_api.router)
