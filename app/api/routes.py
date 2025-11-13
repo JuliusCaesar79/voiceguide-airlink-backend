@@ -1,6 +1,9 @@
 # app/api/routes.py
 from __future__ import annotations
 
+import os
+from datetime import datetime, timedelta
+
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from sqlalchemy.orm import Session
 from sqlalchemy import text
@@ -42,6 +45,7 @@ def _table_exists(db: Session, table: str) -> bool:
     """)
     return db.execute(q, {"t": table}).first() is not None
 
+
 def _has_col(db: Session, table: str, col: str) -> bool:
     q = text("""
         SELECT 1
@@ -50,6 +54,7 @@ def _has_col(db: Session, table: str, col: str) -> bool:
         LIMIT 1
     """)
     return db.execute(q, {"t": table, "c": col}).first() is not None
+
 
 def _queue_event_if_ready(
     db: Session,
@@ -206,7 +211,7 @@ def join_pin_endpoint(
                 "device": _has_col(db, "joins", "device"),
                 "network_quality": _has_col(db, "joins", "network_quality"),
                 "city": _has_col(db, "joins", "city"),
-                "country": _has_col(db, "joins", "country"),
+                "country": _has_col(db, "country") if _has_col(db, "joins", "country") else False,
             }
             if any(cols.values()):
                 row = db.execute(text(f"""
@@ -335,6 +340,111 @@ def end_session_endpoint(
         pass
 
     return {"ok": True}
+
+
+# --------------------------- Admin quick stats ------------------------------
+@router.get(
+    "/admin/quick-stats",
+    summary="Quick stats backend (admin)",
+    tags=["admin"],
+)
+def admin_quick_stats(
+    db: Session = Depends(get_db),
+):
+    """
+    Mini-dashboard JSON:
+    - stato DB
+    - versione app
+    - conteggi ultime 24h
+    - ultime sessioni (fino a 5) se la tabella esiste
+    """
+    now = datetime.utcnow()
+    since = now - timedelta(hours=24)
+    version = os.getenv("APP_VERSION", "dev")
+
+    # Stato DB base
+    db_ok = True
+    try:
+        db.execute(text("SELECT 1"))
+    except Exception:
+        db_ok = False
+
+    sessions_24h = None
+    listeners_24h = None
+    events_24h = None
+    recent_sessions: list[dict] = []
+
+    # Conteggio sessioni ultime 24h
+    if _table_exists(db, "sessions"):
+        has_started_at = _has_col(db, "sessions", "started_at")
+        if has_started_at:
+            sessions_24h = db.execute(text("""
+                SELECT COUNT(*)::bigint
+                FROM sessions
+                WHERE started_at >= :since
+            """), {"since": since}).scalar()
+
+        # Ultime 5 sessioni
+        has_ended_at = _has_col(db, "sessions", "ended_at")
+        has_pin = _has_col(db, "sessions", "pin")
+        has_listeners = _has_col(db, "sessions", "listeners_count")
+        has_license_col = _has_col(db, "sessions", "license_code")
+
+        rows = db.execute(text(f"""
+            SELECT
+              s.id,
+              {"s.pin" if has_pin else "NULL::text"} AS pin,
+              {"s.started_at" if has_started_at else "NULL::timestamp"} AS started_at,
+              {"s.ended_at" if has_ended_at else "NULL::timestamp"} AS ended_at,
+              {"s.listeners_count" if has_listeners else "NULL::int"} AS listeners_count,
+              {"s.license_code" if has_license_col else "NULL::text"} AS license_code
+            FROM sessions s
+            ORDER BY
+              {"s.started_at DESC NULLS LAST," if has_started_at else ""}
+              s.id DESC
+            LIMIT 5
+        """)).mappings().all()
+
+        for r in rows:
+            recent_sessions.append({
+                "id": str(r["id"]),
+                "pin": r["pin"],
+                "license_code": r.get("license_code"),
+                "started_at": r["started_at"].isoformat() if hasattr(r["started_at"], "isoformat") else (str(r["started_at"]) if r["started_at"] else None),
+                "ended_at": r["ended_at"].isoformat() if hasattr(r["ended_at"], "isoformat") else (str(r["ended_at"]) if r["ended_at"] else None),
+                "listeners_count": int(r["listeners_count"]) if r["listeners_count"] is not None else None,
+            })
+
+    # Conteggio listeners ultime 24h (joins)
+    if _table_exists(db, "joins") and _has_col(db, "joins", "joined_at"):
+        listeners_24h = db.execute(text("""
+            SELECT COUNT(*)::bigint
+            FROM joins
+            WHERE joined_at >= :since
+        """), {"since": since}).scalar()
+
+    # Conteggio eventi ultime 24h
+    if _table_exists(db, "events") and _has_col(db, "events", "created_at"):
+        events_24h = db.execute(text("""
+            SELECT COUNT(*)::bigint
+            FROM events
+            WHERE created_at >= :since
+        """), {"since": since}).scalar()
+
+    return {
+        "status": "ok" if db_ok else "degraded",
+        "version": version,
+        "now_utc": now.isoformat() + "Z",
+        "window_hours": 24,
+        "db_ok": db_ok,
+        "counters": {
+            "sessions_last_24h": int(sessions_24h) if sessions_24h is not None else None,
+            "listeners_last_24h": int(listeners_24h) if listeners_24h is not None else None,
+            "events_last_24h": int(events_24h) if events_24h is not None else None,
+        },
+        "recent_sessions": recent_sessions,
+    }
+# ---------------------------------------------------------------------------
 
 
 # 🔗 monta qui SOLO i router con path RELATIVI (compatibili con /api)

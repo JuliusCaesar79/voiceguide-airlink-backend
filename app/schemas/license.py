@@ -8,9 +8,21 @@ from pydantic import BaseModel, Field
 # Base schema
 # ------------------------------------------------------------
 class LicenseBase(BaseModel):
-    code: str
-    max_listeners: Optional[int] = 40
-    duration_minutes: Optional[int] = 60
+    code: str = Field(..., min_length=3, max_length=64)
+
+    # Tagli consentiti dal vincolo di DB: 10, 25, 35, 100
+    max_listeners: int = Field(
+        10,
+        description="Numero massimo ascoltatori. Valori consentiti: 10, 25, 35, 100."
+    )
+
+    # Durata di default allineata al modello: 240 minuti (4h)
+    duration_minutes: int = Field(
+        240,
+        ge=15,
+        le=24 * 60,
+        description="Durata licenza in minuti (default 240 = 4h)."
+    )
 
     model_config = {"from_attributes": True}
 

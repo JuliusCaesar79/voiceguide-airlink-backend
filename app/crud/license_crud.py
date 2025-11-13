@@ -13,7 +13,7 @@ from app.core.utils import gen_pin, utcnow, compute_expiry
 PIN_GENERATION_TRIES = 6
 
 # Set coerente con il vincolo DB (ck_license_max_listeners_allowed)
-ALLOWED_MAX_LISTENERS = {10, 25, 50, 100}
+ALLOWED_MAX_LISTENERS = {10, 25, 35, 100}
 
 # =========================
 #  LOOKUP / ACTIVATION
