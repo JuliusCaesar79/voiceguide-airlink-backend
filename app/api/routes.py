@@ -16,6 +16,9 @@ from app.schemas.license import LicenseActivateIn, LicenseActivateOut
 from app.schemas.session import SessionOut
 from app.crud import license_crud
 
+# Modelli
+from app.models.listener import Listener as ListenerModel
+
 # Log eventi (non deve mai bloccare il flusso)
 from app.core.utils import log_event
 
@@ -245,6 +248,71 @@ def join_pin_endpoint(
         "id": str(listener.id),
         "session_id": str(listener.session_id),
         "joined_at": listener.joined_at,
+    }
+
+
+@router.post("/listeners/{listener_id}/leave", summary="Lascia il tour (ascoltatore)")
+def leave_listener_endpoint(
+    listener_id: str,
+    db: Session = Depends(get_db),
+    background_tasks: BackgroundTasks = None,
+):
+    """
+    Disconnette manualmente un ascoltatore dalla sessione.
+    Idempotente: se il listener è già disconnesso, ritorna comunque ok.
+    """
+    listener: ListenerModel | None = (
+        db.query(ListenerModel)
+        .filter(ListenerModel.id == listener_id)
+        .first()
+    )
+
+    if listener is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Listener not found",
+        )
+
+    # Se è già disconnesso, non facciamo nulla (idempotente)
+    if not listener.is_connected:
+        return {
+            "ok": True,
+            "listener_id": str(listener.id),
+            "session_id": str(listener.session_id),
+            "status": "already_disconnected",
+        }
+
+    # Disconnessione
+    listener.disconnect()
+
+    # Log evento (best-effort)
+    try:
+        log_event(
+            db,
+            "listener_left",
+            f"listener={listener.id};reason=manual_leave",
+            session_id=str(listener.session_id),
+        )
+    except Exception:
+        pass
+
+    # Event Bus (best-effort)
+    _queue_event_if_ready(db, background_tasks, "listener_left", {
+        "session_id": str(listener.session_id),
+        "listener_id": str(listener.id),
+        "reason": "manual_leave",
+        "left_at": listener.left_at.isoformat() if getattr(listener, "left_at", None) else None,
+    })
+
+    db.commit()
+    db.refresh(listener)
+
+    return {
+        "ok": True,
+        "listener_id": str(listener.id),
+        "session_id": str(listener.session_id),
+        "status": "disconnected",
+        "left_at": listener.left_at,
     }
 
 

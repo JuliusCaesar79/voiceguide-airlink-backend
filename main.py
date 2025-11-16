@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
@@ -38,7 +39,7 @@ from app.routers.events_receive import router as events_receive_router
 # DB session
 from app.db.session import get_db
 
-# Scheduler automatico di retry eventi
+# Scheduler automatico (retry eventi + auto-close sessioni)
 from app.core.scheduler import start_scheduler, stop_scheduler
 
 
@@ -176,6 +177,7 @@ def create_app() -> FastAPI:
     # --------------------------------------------------------
     @app.on_event("startup")
     async def _on_startup():
+        # Scheduler: retry eventi + auto-close sessioni
         start_scheduler(app)
 
     @app.on_event("shutdown")
@@ -195,4 +197,5 @@ app = create_app()
 # ------------------------------------------------------------
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
