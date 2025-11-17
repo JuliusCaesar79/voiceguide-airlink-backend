@@ -9,6 +9,7 @@ from app.models.license import License
 from app.models.session import Session as SessionModel
 from app.models.listener import Listener
 from app.core.utils import gen_pin, utcnow, compute_expiry
+from app.core.session_end import end_session_logic  # NEW: usa la logica centralizzata
 
 PIN_GENERATION_TRIES = 6
 
@@ -20,6 +21,7 @@ ALLOWED_MAX_LISTENERS = {10, 25, 35, 100}
 # =========================
 def get_license_by_code(db: Session, code: str) -> Optional[License]:
     return db.query(License).filter(License.code == code).first()
+
 
 def activate_license(db: Session, code: str) -> Tuple[Optional[License], Optional[int] | str]:
     """
@@ -67,6 +69,7 @@ def activate_license(db: Session, code: str) -> Tuple[Optional[License], Optiona
 
     return lic, remaining
 
+
 # =========================
 #  SESSION MANAGEMENT
 # =========================
@@ -97,7 +100,7 @@ def start_session_for_license(db: Session, license_obj: License, requested_max_l
         candidate = gen_pin(6)
         exists = (
             db.query(SessionModel)
-            .filter(SessionModel.pin == candidate, SessionModel.is_active == True)
+            .filter(SessionModel.pin == candidate, SessionModel.is_active.is_(True))
             .first()
         )
         if not exists:
@@ -126,10 +129,13 @@ def start_session_for_license(db: Session, license_obj: License, requested_max_l
         return None, "db_error"
     return session, None
 
+
 def join_session_by_pin(db: Session, pin: str, display_name: str = None):
-    session = db.query(SessionModel).filter(
-        SessionModel.pin == pin, SessionModel.is_active == True
-    ).first()
+    session = (
+        db.query(SessionModel)
+        .filter(SessionModel.pin == pin, SessionModel.is_active.is_(True))
+        .first()
+    )
     if not session:
         return None, "session_not_found"
 
@@ -150,17 +156,25 @@ def join_session_by_pin(db: Session, pin: str, display_name: str = None):
     db.refresh(listener)
     return listener, None
 
-def end_session(db: Session, session_id):
-    s = db.query(SessionModel).filter(SessionModel.id == session_id).first()
-    if not s:
-        return False
-    s.is_active = False
-    # marca la fine sessione se il campo esiste (supporto KPI)
-    if hasattr(s, "ended_at"):
-        s.ended_at = utcnow()
-    db.add(s)
-    db.commit()
-    return True
+
+def end_session(db: Session, session_id: str) -> bool:
+    """
+    Chiude una sessione utilizzando la logica centralizzata di app.core.session_end.
+
+    - Idempotente: se la sessione non esiste, ritorna False.
+    - Se esiste:
+        * marca la sessione come non attiva
+        * imposta ended_at
+        * disconnette tutti i listener ancora collegati
+    """
+    session = end_session_logic(
+        db=db,
+        session_id=session_id,
+        reason="manual",
+        event_logger=None,  # il logging di session_ended viene gestito dal router API
+    )
+    return session is not None
+
 
 # =========================
 #  ADMIN HELPERS / ACTIONS
@@ -172,18 +186,18 @@ def _serialize_license(lic: License) -> Dict[str, Any]:
     """
     data = {
         "id": str(lic.id),
-        "key": getattr(lic, "code", None),  # nelle API admin la chiamiamo 'key'
+        "key": getattr(lic, "code", None),
         "active": bool(getattr(lic, "is_active", False)),
         "activated_at": getattr(lic, "activated_at", None),
         "revoked_at": getattr(lic, "revoked_at", None) if hasattr(lic, "revoked_at") else None,
         "assigned_to": None,
     }
-    # Se in futuro aggiungi campi tipo 'assigned_to' o 'guide_id', popolali così:
     if hasattr(lic, "assigned_to") and getattr(lic, "assigned_to") is not None:
         data["assigned_to"] = getattr(lic, "assigned_to")
     elif hasattr(lic, "guide_id") and getattr(lic, "guide_id") is not None:
         data["assigned_to"] = str(getattr(lic, "guide_id"))
     return data
+
 
 def admin_list(
     db: Session,
@@ -195,16 +209,11 @@ def admin_list(
 ) -> Dict[str, Any]:
     """
     Elenco licenze per pannello admin con filtri e paginazione.
-    Filtri supportati:
-      - q: ricerca per code (chiave licenza)
-      - active: True/False -> filtra su is_active
-      - revoked: True/False -> filtra su revoked_at is not/is null (solo se il campo esiste)
     """
     qry = db.query(License)
 
     if q:
         like = f"%{q}%"
-        # ricerca sul campo 'code' (il tuo modello reale)
         qry = qry.filter(License.code.ilike(like))
 
     if active is not None:
@@ -217,11 +226,7 @@ def admin_list(
             qry = qry.filter(License.revoked_at.is_(None))
 
     total = qry.count()
-
-    # Ordine: prima le più “recentemente attivate”, poi per code
-    # Se non hai created_at nel modello, evitiamo di ordinarci sopra.
     qry = qry.order_by(License.activated_at.desc().nullslast(), License.code.asc())
-
     items: List[License] = qry.limit(limit).offset(offset).all()
 
     return {
@@ -229,12 +234,8 @@ def admin_list(
         "items": [_serialize_license(x) for x in items],
     }
 
+
 def admin_revoke(db: Session, license_id: str) -> Optional[License]:
-    """
-    Revoca una licenza:
-      - imposta is_active = False
-      - se esiste il campo revoked_at, lo valorizza a ora UTC
-    """
     lic = db.query(License).get(license_id)
     if not lic:
         return None
@@ -246,12 +247,8 @@ def admin_revoke(db: Session, license_id: str) -> Optional[License]:
     db.refresh(lic)
     return lic
 
+
 def admin_reactivate(db: Session, license_id: str) -> Optional[License]:
-    """
-    Riattiva una licenza:
-      - imposta is_active = True
-      - opzionale: se esiste revoked_at lo azzera
-    """
     lic = db.query(License).get(license_id)
     if not lic:
         return None
