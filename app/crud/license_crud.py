@@ -159,13 +159,15 @@ def join_session_by_pin(db: Session, pin: str, display_name: str = None):
 
 def end_session(db: Session, session_id: str) -> bool:
     """
-    Chiude una sessione utilizzando la logica centralizzata di app.core.session_end.
+    Chiude una sessione utilizzando la logica centralizzata di app.core.session_end
+    E CONSUMA DEFINITIVAMENTE LA LICENZA ASSOCIATA.
 
     - Idempotente: se la sessione non esiste, ritorna False.
     - Se esiste:
         * marca la sessione come non attiva
         * imposta ended_at
         * disconnette tutti i listener ancora collegati
+        * disattiva la License associata (fine vita licenza)
     """
     session = end_session_logic(
         db=db,
@@ -173,7 +175,28 @@ def end_session(db: Session, session_id: str) -> bool:
         reason="manual",
         event_logger=None,  # il logging di session_ended viene gestito dal router API
     )
-    return session is not None
+    if not session:
+        return False
+
+    # Disattiva la licenza collegata alla sessione (consumo definitivo)
+    if getattr(session, "license_id", None):
+        lic = db.query(License).get(session.license_id)
+        if lic:
+            now = utcnow()
+            # la licenza non deve più essere riutilizzabile
+            lic.is_active = False
+
+            # se il modello ha campi opzionali di tracking, li aggiorniamo senza rompere nulla
+            if hasattr(lic, "revoked_at") and getattr(lic, "revoked_at", None) is None:
+                lic.revoked_at = now
+            if hasattr(lic, "updated_at"):
+                lic.updated_at = now
+
+            db.add(lic)
+            db.commit()
+            db.refresh(lic)
+
+    return True
 
 
 # =========================

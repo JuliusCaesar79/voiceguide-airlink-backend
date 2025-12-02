@@ -65,5 +65,7 @@ class LicenseActivateOut(BaseModel):
     is_active: bool
     activated_at: Optional[datetime] = None
     remaining_minutes: Optional[int] = None
+    # NEW: numero massimo ospiti per questa licenza (mappato da License.max_listeners)
+    max_guests: int
 
     model_config = {"from_attributes": True}

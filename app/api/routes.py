@@ -90,6 +90,9 @@ def activate_license_endpoint(
     if lic is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="License not found")
 
+    # max_guests = max_listeners della licenza (fallback 25 se non presente)
+    max_guests = int(getattr(lic, "max_listeners", 25) or 25)
+
     try:
         log_event(db, "license_activated", f"code={payload.license_code}")
     except Exception:
@@ -100,6 +103,7 @@ def activate_license_endpoint(
         "license_id": str(lic.id),
         "remaining_minutes": rem_or_err,
         "activated_at": lic.activated_at.isoformat() if getattr(lic, "activated_at", None) else None,
+        "max_guests": max_guests,
     })
 
     return {
@@ -108,6 +112,7 @@ def activate_license_endpoint(
         "is_active": lic.is_active,
         "activated_at": lic.activated_at,
         "remaining_minutes": rem_or_err,
+        "max_guests": max_guests,
     }
 
 
