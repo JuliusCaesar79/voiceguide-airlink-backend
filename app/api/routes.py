@@ -18,6 +18,7 @@ from app.crud import license_crud
 
 # Modelli
 from app.models.listener import Listener as ListenerModel
+from app.models.session import Session as SessionModel  # ⬅️ NEW: modello Session
 
 # Log eventi (non deve mai bloccare il flusso)
 from app.core.utils import log_event
@@ -311,6 +312,48 @@ def end_session_endpoint(
     })
 
     return {"ok": True}
+
+
+# =====================================================================
+# SESSION STATUS (polling guida)
+# =====================================================================
+@router.get(
+    "/sessions/{session_id}/status",
+    summary="Stato sessione (guida - polling)",
+)
+def get_session_status_endpoint(
+    session_id: str,
+    db: Session = Depends(get_db),
+):
+    session = (
+        db.query(SessionModel)
+        .filter(SessionModel.id == session_id)
+        .first()
+    )
+
+    if session is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Session not found",
+        )
+
+    # Calcolo secondi residui rispetto a expires_at
+    now = datetime.utcnow()
+    remaining_seconds = int((session.expires_at - now).total_seconds())
+    if remaining_seconds < 0:
+        remaining_seconds = 0
+
+    return {
+        "id": str(session.id),
+        "pin": session.pin,
+        "is_active": session.is_active and remaining_seconds > 0,
+        "max_listeners": session.max_listeners,
+        "current_listeners": session.active_listeners,
+        "started_at": session.started_at,
+        "ended_at": session.ended_at,
+        "expires_at": session.expires_at,
+        "remaining_seconds": remaining_seconds,
+    }
 
 
 # =====================================================================
