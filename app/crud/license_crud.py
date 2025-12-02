@@ -23,13 +23,24 @@ def get_license_by_code(db: Session, code: str) -> Optional[License]:
     return db.query(License).filter(License.code == code).first()
 
 
-def activate_license(db: Session, code: str) -> Tuple[Optional[License], Optional[int] | str]:
+def activate_license(
+    db: Session,
+    code: str,
+) -> Tuple[Optional[License], Optional[int] | str]:
     """
     Attiva o verifica una licenza e restituisce (License, remaining_minutes).
-    Ritorna (None, "license_not_found") se il codice non esiste.
-    - Se la licenza non è attiva, la attiva e imposta activated_at = now.
-    - Se è la prima attivazione (activated_at is None) calcola remaining = duration_minutes.
-    - Altrimenti remaining = duration_minutes - elapsed.
+
+    Ritorni possibili:
+    - (None, "license_not_found") se il codice non esiste.
+    - (None, "license_used") se la licenza è già stata usata/consumata.
+    - (License, remaining_minutes) in tutti gli altri casi validi.
+
+    Logica:
+    - Se la licenza è "fresca" (activated_at is None): prima attivazione → imposta activated_at = now
+      e is_active = True, remaining = duration_minutes.
+    - Se è già attiva (activated_at non null e is_active True) → calcola remaining in base al tempo trascorso.
+    - Se è già attivata ma non più attiva (is_active False) → la consideriamo CONSUMATA
+      secondo la regola "una licenza = un tour secco".
     """
     lic = get_license_by_code(db, code)
     if not lic:
@@ -40,23 +51,28 @@ def activate_license(db: Session, code: str) -> Tuple[Optional[License], Optiona
     # durata di fallback se il campo non esiste o è null
     duration_minutes = int(getattr(lic, "duration_minutes", 240) or 240)
 
-    # se la licenza non è attiva -> attiva e marca activated_at ora
-    if not getattr(lic, "is_active", True):
-        lic.is_active = True
+    activated_at = getattr(lic, "activated_at", None)
+    is_active = bool(getattr(lic, "is_active", False))
 
-    # prima attivazione: se activated_at è None, impostalo adesso
-    if getattr(lic, "activated_at", None) is None:
+    # Caso: licenza già attivata in passato ma non più attiva
+    # -> per la nostra regola commerciale, la trattiamo come "già usata".
+    if activated_at is not None and not is_active:
+        return None, "license_used"
+
+    # Prima attivazione: la licenza non era mai stata attivata
+    if activated_at is None:
+        lic.is_active = True
         if hasattr(lic, "activated_at"):
             lic.activated_at = now
         if hasattr(lic, "updated_at"):
             lic.updated_at = now
+
         db.add(lic)
         db.commit()
         db.refresh(lic)
         return lic, duration_minutes
 
-    # ri-attivazione/controllo con activated_at già valorizzato
-    activated_at = lic.activated_at
+    # Caso: licenza già attiva (activated_at valorizzato, is_active True)
     elapsed_minutes = max(0, int((now - activated_at).total_seconds() / 60.0))
     remaining = max(0, duration_minutes - elapsed_minutes)
 
@@ -73,17 +89,35 @@ def activate_license(db: Session, code: str) -> Tuple[Optional[License], Optiona
 # =========================
 #  SESSION MANAGEMENT
 # =========================
-def start_session_for_license(db: Session, license_obj: License, requested_max_listeners: int = None):
+def start_session_for_license(
+    db: Session,
+    license_obj: License,
+    requested_max_listeners: int = None,
+):
+    """
+    Avvia una sessione collegata a una licenza.
+
+    Regole:
+    - La licenza deve essere attiva (is_active True) e con activated_at valorizzato.
+    - La licenza non deve essere scaduta rispetto a duration_minutes.
+    - max_listeners deve rientrare in ALLOWED_MAX_LISTENERS.
+    - CREA UNA SOLA SESSIONE PER LICENZA:
+      appena viene creata una sessione, la licenza viene marcata come non attiva
+      (consumata) secondo la regola "una licenza = un tour secco".
+    """
     now = utcnow()
 
     # check license attiva e marcata come attivata
-    if not getattr(license_obj, "is_active", True) or not getattr(license_obj, "activated_at", None):
+    if not getattr(license_obj, "is_active", False) or not getattr(license_obj, "activated_at", None):
         return None, "license_not_active"
 
     duration_minutes = int(getattr(license_obj, "duration_minutes", 240) or 240)
     elapsed = (now - license_obj.activated_at).total_seconds() / 60.0
     if elapsed >= duration_minutes:
+        # la licenza è scaduta: la marchiamo come non attiva
         license_obj.is_active = False
+        if hasattr(license_obj, "updated_at"):
+            license_obj.updated_at = now
         db.add(license_obj)
         db.commit()
         return None, "license_expired"
@@ -93,6 +127,14 @@ def start_session_for_license(db: Session, license_obj: License, requested_max_l
     max_listeners = int(requested_max_listeners or default_ml)
     if max_listeners not in ALLOWED_MAX_LISTENERS:
         return None, "invalid_max_listeners"
+
+    # Regola commerciale: UNA LICENZA = UN TOUR.
+    # Appena creiamo una sessione, marchiamo la licenza come NON ATTIVA
+    # in modo che non possa più essere usata per iniziare altri tour.
+    license_obj.is_active = False
+    if hasattr(license_obj, "updated_at"):
+        license_obj.updated_at = now
+    db.add(license_obj)
 
     # genera PIN univoco
     pin = None
@@ -159,15 +201,16 @@ def join_session_by_pin(db: Session, pin: str, display_name: str = None):
 
 def end_session(db: Session, session_id: str) -> bool:
     """
-    Chiude una sessione utilizzando la logica centralizzata di app.core.session_end
-    E CONSUMA DEFINITIVAMENTE LA LICENZA ASSOCIATA.
+    Chiude una sessione utilizzando la logica centralizzata di app.core.session_end.
 
     - Idempotente: se la sessione non esiste, ritorna False.
     - Se esiste:
         * marca la sessione come non attiva
         * imposta ended_at
         * disconnette tutti i listener ancora collegati
-        * disattiva la License associata (fine vita licenza)
+
+    NOTA: la regola "una licenza = un tour" è già gestita in start_session_for_license,
+    dove la licenza viene marcata come non attiva appena il tour parte.
     """
     session = end_session_logic(
         db=db,
@@ -175,28 +218,7 @@ def end_session(db: Session, session_id: str) -> bool:
         reason="manual",
         event_logger=None,  # il logging di session_ended viene gestito dal router API
     )
-    if not session:
-        return False
-
-    # Disattiva la licenza collegata alla sessione (consumo definitivo)
-    if getattr(session, "license_id", None):
-        lic = db.query(License).get(session.license_id)
-        if lic:
-            now = utcnow()
-            # la licenza non deve più essere riutilizzabile
-            lic.is_active = False
-
-            # se il modello ha campi opzionali di tracking, li aggiorniamo senza rompere nulla
-            if hasattr(lic, "revoked_at") and getattr(lic, "revoked_at", None) is None:
-                lic.revoked_at = now
-            if hasattr(lic, "updated_at"):
-                lic.updated_at = now
-
-            db.add(lic)
-            db.commit()
-            db.refresh(lic)
-
-    return True
+    return session is not None
 
 
 # =========================

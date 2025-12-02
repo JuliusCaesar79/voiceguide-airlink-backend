@@ -18,7 +18,7 @@ from app.crud import license_crud
 
 # Modelli
 from app.models.listener import Listener as ListenerModel
-from app.models.session import Session as SessionModel  # ⬅️ NEW: modello Session
+from app.models.session import Session as SessionModel  # ⬅️ modello Session
 
 # Log eventi (non deve mai bloccare il flusso)
 from app.core.utils import log_event
@@ -80,15 +80,35 @@ def _queue_event_if_ready(
 # =====================================================================
 # ATTIVA LICENZA
 # =====================================================================
-@router.post("/activate-license", response_model=LicenseActivateOut, summary="Attiva una licenza (client → guida)")
+@router.post(
+    "/activate-license",
+    response_model=LicenseActivateOut,
+    summary="Attiva una licenza (client → guida)",
+)
 def activate_license_endpoint(
     payload: LicenseActivateIn,
     db: Session = Depends(get_db),
     background_tasks: BackgroundTasks = None,
 ):
     lic, rem_or_err = license_crud.activate_license(db, payload.license_code)
+
+    # lic None -> errore
     if lic is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="License not found")
+        if rem_or_err == "license_not_found":
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="License not found",
+            )
+        if rem_or_err == "license_used":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="License already used",
+            )
+        # fallback generico
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(rem_or_err),
+        )
 
     # max_guests = max_listeners della licenza (fallback 25 se non presente)
     max_guests = int(getattr(lic, "max_listeners", 25) or 25)
@@ -98,13 +118,20 @@ def activate_license_endpoint(
     except Exception:
         pass
 
-    _queue_event_if_ready(db, background_tasks, "license_activated", {
-        "license_code": payload.license_code,
-        "license_id": str(lic.id),
-        "remaining_minutes": rem_or_err,
-        "activated_at": lic.activated_at.isoformat() if getattr(lic, "activated_at", None) else None,
-        "max_guests": max_guests,
-    })
+    _queue_event_if_ready(
+        db,
+        background_tasks,
+        "license_activated",
+        {
+            "license_code": payload.license_code,
+            "license_id": str(lic.id),
+            "remaining_minutes": rem_or_err,
+            "activated_at": lic.activated_at.isoformat()
+            if getattr(lic, "activated_at", None)
+            else None,
+            "max_guests": max_guests,
+        },
+    )
 
     return {
         "id": str(lic.id),
@@ -119,7 +146,11 @@ def activate_license_endpoint(
 # =====================================================================
 # START SESSION
 # =====================================================================
-@router.post("/start-session", response_model=SessionOut, summary="Avvia una sessione voce (guida)")
+@router.post(
+    "/start-session",
+    response_model=SessionOut,
+    summary="Avvia una sessione voce (guida)",
+)
 def start_session_endpoint(
     license_code: str,
     max_listeners: int | None = None,
@@ -128,40 +159,72 @@ def start_session_endpoint(
 ):
     lic = license_crud.get_license_by_code(db, license_code)
     if not lic:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="License not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="License not found",
+        )
 
-    session, err = license_crud.start_session_for_license(db, lic, requested_max_listeners=max_listeners)
+    session, err = license_crud.start_session_for_license(
+        db, lic, requested_max_listeners=max_listeners
+    )
     if err:
         mapping = {
-            "license_not_active": (status.HTTP_409_CONFLICT, "License not active"),
-            "license_expired": (status.HTTP_409_CONFLICT, "License expired"),
-            "invalid_max_listeners": (status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid max_listeners"),
-            "pin_generation_failed": (status.HTTP_500_INTERNAL_SERVER_ERROR, "pin_generation_failed"),
+            "license_not_active": (
+                status.HTTP_409_CONFLICT,
+                "License not active",
+            ),
+            "license_expired": (
+                status.HTTP_409_CONFLICT,
+                "License expired",
+            ),
+            "invalid_max_listeners": (
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "invalid max_listeners",
+            ),
+            "pin_generation_failed": (
+                status.HTTP_500_INTERNAL_SERVER_ERROR,
+                "pin_generation_failed",
+            ),
         }
         sc, msg = mapping.get(err, (status.HTTP_500_INTERNAL_SERVER_ERROR, err))
         raise HTTPException(status_code=sc, detail=msg)
 
     try:
-        log_event(db, "session_started", f"pin={session.pin}", session_id=str(session.id))
+        log_event(
+            db,
+            "session_started",
+            f"pin={session.pin}",
+            session_id=str(session.id),
+        )
     except Exception:
         pass
 
-    _queue_event_if_ready(db, background_tasks, "session_started", {
-        "session_id": str(session.id),
-        "license_code": license_code,
-        "pin": session.pin,
-        "max_listeners": max_listeners,
-        "started_at": session.started_at.isoformat() if getattr(session, "started_at", None) else None,
-    })
-
-    try:
-        n = Notifier()
-        n.notify("Session Started", {
-            "event": "session_started",
+    _queue_event_if_ready(
+        db,
+        background_tasks,
+        "session_started",
+        {
             "session_id": str(session.id),
             "license_code": license_code,
             "pin": session.pin,
-        })
+            "max_listeners": max_listeners,
+            "started_at": session.started_at.isoformat()
+            if getattr(session, "started_at", None)
+            else None,
+        },
+    )
+
+    try:
+        n = Notifier()
+        n.notify(
+            "Session Started",
+            {
+                "event": "session_started",
+                "session_id": str(session.id),
+                "license_code": license_code,
+                "pin": session.pin,
+            },
+        )
     except Exception:
         pass
 
@@ -181,7 +244,10 @@ def join_pin_endpoint(
     listener, err = license_crud.join_session_by_pin(db, pin, display_name)
     if err:
         mapping = {
-            "session_not_found": (status.HTTP_404_NOT_FOUND, "Session not found"),
+            "session_not_found": (
+                status.HTTP_404_NOT_FOUND,
+                "Session not found",
+            ),
             "session_expired": (status.HTTP_410_GONE, "Session expired"),
             "session_full": (status.HTTP_409_CONFLICT, "Session full"),
         }
@@ -189,16 +255,26 @@ def join_pin_endpoint(
         raise HTTPException(status_code=sc, detail=msg)
 
     try:
-        log_event(db, "listener_joined", f"listener={listener.id}", session_id=str(listener.session_id))
+        log_event(
+            db,
+            "listener_joined",
+            f"listener={listener.id}",
+            session_id=str(listener.session_id),
+        )
     except Exception:
         pass
 
-    _queue_event_if_ready(db, background_tasks, "listener_joined", {
-        "session_id": str(listener.session_id),
-        "listener_id": str(listener.id),
-        "pin": pin,
-        "display_name": display_name,
-    })
+    _queue_event_if_ready(
+        db,
+        background_tasks,
+        "listener_joined",
+        {
+            "session_id": str(listener.session_id),
+            "listener_id": str(listener.id),
+            "pin": pin,
+            "display_name": display_name,
+        },
+    )
 
     return {
         "id": str(listener.id),
@@ -210,7 +286,10 @@ def join_pin_endpoint(
 # =====================================================================
 # GET LISTENER STATUS (nuovo)
 # =====================================================================
-@router.get("/listeners/{listener_id}", summary="Stato listener (polling ospite)")
+@router.get(
+    "/listeners/{listener_id}",
+    summary="Stato listener (polling ospite)",
+)
 def get_listener_status(
     listener_id: str,
     db: Session = Depends(get_db),
@@ -239,7 +318,10 @@ def get_listener_status(
 # =====================================================================
 # LEAVE LISTENER
 # =====================================================================
-@router.post("/listeners/{listener_id}/leave", summary="Lascia il tour (ascoltatore)")
+@router.post(
+    "/listeners/{listener_id}/leave",
+    summary="Lascia il tour (ascoltatore)",
+)
 def leave_listener_endpoint(
     listener_id: str,
     db: Session = Depends(get_db),
@@ -277,11 +359,16 @@ def leave_listener_endpoint(
     except Exception:
         pass
 
-    _queue_event_if_ready(db, background_tasks, "listener_left", {
-        "session_id": str(listener.session_id),
-        "listener_id": str(listener.id),
-        "reason": "manual_leave",
-    })
+    _queue_event_if_ready(
+        db,
+        background_tasks,
+        "listener_left",
+        {
+            "session_id": str(listener.session_id),
+            "listener_id": str(listener.id),
+            "reason": "manual_leave",
+        },
+    )
 
     db.commit()
     db.refresh(listener)
@@ -305,16 +392,22 @@ def end_session_endpoint(
 ):
     ok = license_crud.end_session(db, session_id)
     if not ok:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Session not found",
+        )
 
     try:
         log_event(db, "session_ended", session_id=session_id)
     except Exception:
         pass
 
-    _queue_event_if_ready(db, background_tasks, "session_ended", {
-        "session_id": session_id,
-    })
+    _queue_event_if_ready(
+        db,
+        background_tasks,
+        "session_ended",
+        {"session_id": session_id},
+    )
 
     return {"ok": True}
 
@@ -391,11 +484,16 @@ def admin_quick_stats(
         has_started_at = _has_col(db, "sessions", "started_at")
 
         if has_started_at:
-            sessions_24h = db.execute(text("""
+            sessions_24h = db.execute(
+                text(
+                    """
                 SELECT COUNT(*)::bigint
                 FROM sessions
                 WHERE started_at >= :since
-            """), {"since": since}).scalar()
+            """
+                ),
+                {"since": since},
+            ).scalar()
 
     return {
         "status": "ok" if db_ok else "degraded",
