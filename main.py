@@ -36,6 +36,9 @@ from app.routers.admin_events import router as admin_events_router
 # 🆕 Webhook HMAC receiver (nuovo modulo)
 from app.routers.events_receive import router as events_receive_router
 
+# ✅ Agora kill switch (test auth / poi kick)
+from app.routers.admin_agora import router as admin_agora_router
+
 # DB session
 from app.db.session import get_db
 
@@ -117,6 +120,9 @@ def create_app() -> FastAPI:
     # --------------------------------------------------------
     # Admin overview minimale protetto da X-Admin-Key (se ADMIN_KEY/ADMIN_API_KEY è settata)
     app.include_router(admin_overview_router)
+
+    # ✅ Agora admin (test auth / poi kick)
+    app.include_router(admin_agora_router)
 
     # Eventuali altri router admin già esistenti
     app.include_router(admin_live_router)
