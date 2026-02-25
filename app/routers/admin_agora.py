@@ -41,6 +41,35 @@ def _post_kicking_rule(payload: dict):
     return r.status_code, r.text
 
 
+# ============================================================
+# INTERNAL SERVICE (no admin key required, best-effort caller)
+# ============================================================
+def disband_channel_internal(
+    *,
+    cname: str,
+    time: int = 60,
+    privileges: Optional[List[str]] = None,
+):
+    """
+    Disband server-side del canale Agora, da usare internamente (Kill Switch).
+    Non richiede header admin perché NON è un endpoint: è una funzione interna.
+    """
+    if not cname or not str(cname).strip():
+        raise ValueError("cname is required")
+
+    if privileges is None:
+        privileges = ["join_channel"]
+
+    status_code, text = _post_kicking_rule(
+        {
+            "cname": str(cname).strip(),
+            "time": int(time),
+            "privileges": privileges,
+        }
+    )
+    return {"status_code": status_code, "body": text}
+
+
 class KickUserBody(BaseModel):
     cname: str = Field(..., min_length=1)
     uid: int = Field(..., ge=1)  # UID numerico Agora
@@ -67,7 +96,6 @@ def kick_user(
 ):
     _require_admin(x_admin_key)
 
-    # Kick: cname + uid + join_channel + time=0
     status_code, text = _post_kicking_rule(
         {
             "cname": body.cname,
@@ -86,7 +114,6 @@ def disband_channel(
 ):
     _require_admin(x_admin_key)
 
-    # Disband: cname-only, uid/ip ASSENTI
     status_code, text = _post_kicking_rule(
         {
             "cname": body.cname,

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import logging
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
@@ -23,6 +24,12 @@ from app.models.session import Session as SessionModel  # ⬅️ modello Session
 # Log eventi (non deve mai bloccare il flusso)
 from app.core.utils import log_event
 
+# End session centralized logic (DB authoritative)
+from app.core.session_end import end_session_logic
+
+# Kill switch internal service (Agora disband)
+from app.routers.admin_agora import disband_channel_internal
+
 # Notifiche admin
 from app.services.notify import Notifier
 
@@ -37,27 +44,33 @@ from app.api import events as events_api
 
 router = APIRouter(prefix="/api", tags=["airlink"])
 
+logger = logging.getLogger("airlink.api")
+
 
 # =====================================================================
 # Helpers per meta info DB
 # =====================================================================
 def _table_exists(db: Session, table: str) -> bool:
-    q = text("""
+    q = text(
+        """
         SELECT 1
         FROM information_schema.tables
         WHERE table_name = :t
         LIMIT 1
-    """)
+    """
+    )
     return db.execute(q, {"t": table}).first() is not None
 
 
 def _has_col(db: Session, table: str, col: str) -> bool:
-    q = text("""
+    q = text(
+        """
         SELECT 1
         FROM information_schema.columns
         WHERE table_name = :t AND column_name = :c
         LIMIT 1
-    """)
+    """
+    )
     return db.execute(q, {"t": table, "c": col}).first() is not None
 
 
@@ -78,6 +91,46 @@ def _queue_event_if_ready(
 
 
 # =====================================================================
+# Kill switch helper (best-effort)
+# =====================================================================
+def _extract_cname_from_session(session: SessionModel) -> str | None:
+    """
+    Strategia NO-ALEMBIC:
+    il modello Session non ha campi cname/channel.
+    Usiamo quindi il PIN come channel name Agora (cname).
+    """
+    v = getattr(session, "pin", None)
+    if isinstance(v, str) and v.strip():
+        return v.strip()
+    return None
+
+
+def _kill_switch_disband(*, db: Session, session: SessionModel, reason: str) -> dict:
+    """
+    Kill Switch best-effort: prova a disbandare il canale Agora della sessione.
+    NON deve mai bloccare la chiusura DB (end_session_logic lo gestisce già).
+    """
+    cname = _extract_cname_from_session(session)
+    if not cname:
+        # Fail soft: log e basta
+        try:
+            log_event(
+                db,
+                "KILL_SWITCH_FAIL",
+                "missing_cname",
+                session_id=str(session.id),
+            )
+        except Exception:
+            pass
+        logger.warning("KILL_SWITCH_FAIL session_id=%s missing_cname", session.id)
+        return {"ok": False, "error": "missing_cname"}
+
+    # Chiamata reale: funzione interna che parla con Agora
+    result = disband_channel_internal(cname=cname, time=60, privileges=["join_channel"])
+    return {"ok": True, "cname": cname, "result": result}
+
+
+# =====================================================================
 # ATTIVA LICENZA
 # =====================================================================
 @router.post(
@@ -92,7 +145,6 @@ def activate_license_endpoint(
 ):
     lic, rem_or_err = license_crud.activate_license(db, payload.license_code)
 
-    # lic None -> errore
     if lic is None:
         if rem_or_err == "license_not_found":
             raise HTTPException(
@@ -104,13 +156,11 @@ def activate_license_endpoint(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="License already used",
             )
-        # fallback generico
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(rem_or_err),
         )
 
-    # max_guests = max_listeners della licenza (fallback 25 se non presente)
     max_guests = int(getattr(lic, "max_listeners", 25) or 25)
 
     try:
@@ -169,22 +219,10 @@ def start_session_endpoint(
     )
     if err:
         mapping = {
-            "license_not_active": (
-                status.HTTP_409_CONFLICT,
-                "License not active",
-            ),
-            "license_expired": (
-                status.HTTP_409_CONFLICT,
-                "License expired",
-            ),
-            "invalid_max_listeners": (
-                status.HTTP_422_UNPROCESSABLE_ENTITY,
-                "invalid max_listeners",
-            ),
-            "pin_generation_failed": (
-                status.HTTP_500_INTERNAL_SERVER_ERROR,
-                "pin_generation_failed",
-            ),
+            "license_not_active": (status.HTTP_409_CONFLICT, "License not active"),
+            "license_expired": (status.HTTP_409_CONFLICT, "License expired"),
+            "invalid_max_listeners": (status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid max_listeners"),
+            "pin_generation_failed": (status.HTTP_500_INTERNAL_SERVER_ERROR, "pin_generation_failed"),
         }
         sc, msg = mapping.get(err, (status.HTTP_500_INTERNAL_SERVER_ERROR, err))
         raise HTTPException(status_code=sc, detail=msg)
@@ -244,10 +282,7 @@ def join_pin_endpoint(
     listener, err = license_crud.join_session_by_pin(db, pin, display_name)
     if err:
         mapping = {
-            "session_not_found": (
-                status.HTTP_404_NOT_FOUND,
-                "Session not found",
-            ),
+            "session_not_found": (status.HTTP_404_NOT_FOUND, "Session not found"),
             "session_expired": (status.HTTP_410_GONE, "Session expired"),
             "session_full": (status.HTTP_409_CONFLICT, "Session full"),
         }
@@ -284,7 +319,7 @@ def join_pin_endpoint(
 
 
 # =====================================================================
-# GET LISTENER STATUS (nuovo)
+# GET LISTENER STATUS
 # =====================================================================
 @router.get(
     "/listeners/{listener_id}",
@@ -390,17 +425,24 @@ def end_session_endpoint(
     db: Session = Depends(get_db),
     background_tasks: BackgroundTasks = None,
 ):
-    ok = license_crud.end_session(db, session_id)
-    if not ok:
+    session = (
+        db.query(SessionModel)
+        .filter(SessionModel.id == session_id)
+        .first()
+    )
+    if session is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Session not found",
         )
 
-    try:
-        log_event(db, "session_ended", session_id=session_id)
-    except Exception:
-        pass
+    end_session_logic(
+        db=db,
+        session_id=session.id,
+        reason="manual",
+        event_logger=log_event,
+        kill_switch=_kill_switch_disband,
+    )
 
     _queue_event_if_ready(
         db,
@@ -435,7 +477,6 @@ def get_session_status_endpoint(
             detail="Session not found",
         )
 
-    # Calcolo secondi residui rispetto a expires_at
     now = datetime.utcnow()
     remaining_seconds = int((session.expires_at - now).total_seconds())
     if remaining_seconds < 0:
