@@ -50,17 +50,17 @@ def get_current_user(
 # ==========================================================
 # Accesso alle rotte admin tramite header segreto semplice:
 #   X-Admin-Secret: <valore>
-# Il valore atteso è ADMIN_SECRET (env) o 'prova123' di default.
-# Imposta la variabile d'ambiente prima di avviare il server:
-#   PowerShell →  $env:ADMIN_SECRET="IL_TUO_SEGRETO_LUNGO"
-#   bash/zsh   →  export ADMIN_SECRET="IL_TUO_SEGRETO_LUNGO"
+# Il valore atteso è la variabile d'ambiente ADMIN_SECRET.
+# Nessun default: se la variabile non è impostata, l'accesso admin
+# resta sempre negato (fail-closed) invece di accettare una password
+# fissa nota nel codice sorgente.
 # ==========================================================
 def get_current_admin(
     x_admin_secret: str | None = Header(None, alias="X-Admin-Secret"),
 ):
-    ADMIN_SECRET = os.getenv("ADMIN_SECRET", "prova123")
+    ADMIN_SECRET = os.getenv("ADMIN_SECRET")
 
-    if x_admin_secret and x_admin_secret == ADMIN_SECRET:
+    if ADMIN_SECRET and x_admin_secret and x_admin_secret == ADMIN_SECRET:
         # finto utente admin (namespace) per compatibilità con dipendenze a valle
         return SimpleNamespace(id="dev-admin", role="admin", is_admin=True)
 
