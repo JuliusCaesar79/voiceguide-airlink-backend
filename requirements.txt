@@ -10,3 +10,4 @@ passlib[bcrypt]==1.7.4
 redis==5.0.8
 httpx>=0.27
 requests>=2.31
+agora-token-builder==1.0.0

@@ -30,6 +30,9 @@ from app.core.session_end import end_session_logic
 # Kill switch internal service (Agora disband)
 from app.routers.admin_agora import disband_channel_internal
 
+# Generazione token Agora (best-effort: torna None finché AGORA_APP_CERTIFICATE non è impostato)
+from app.core.agora_token import generate_rtc_token, ROLE_PUBLISHER, ROLE_SUBSCRIBER
+
 # Notifiche admin
 from app.services.notify import Notifier
 
@@ -252,6 +255,16 @@ def start_session_endpoint(
         },
     )
 
+    # Token Agora per la guida (ruolo publisher): None finché l'App Certificate
+    # non è configurato lato Agora, l'app in quel caso resta su modalità solo-AppId
+    remaining_seconds = max(60, int((session.expires_at - datetime.utcnow()).total_seconds()))
+    session.agora_token = generate_rtc_token(
+        channel_name=session.pin,
+        uid=0,
+        role=ROLE_PUBLISHER,
+        expire_seconds=remaining_seconds,
+    )
+
     try:
         n = Notifier()
         n.notify(
@@ -311,10 +324,21 @@ def join_pin_endpoint(
         },
     )
 
+    # Token Agora per l'ospite (ruolo subscriber, solo ascolto): None finché
+    # l'App Certificate non è configurato lato Agora
+    remaining_seconds = max(60, int((listener.session.expires_at - datetime.utcnow()).total_seconds()))
+    agora_token = generate_rtc_token(
+        channel_name=pin,
+        uid=0,
+        role=ROLE_SUBSCRIBER,
+        expire_seconds=remaining_seconds,
+    )
+
     return {
         "id": str(listener.id),
         "session_id": str(listener.session_id),
         "joined_at": listener.joined_at,
+        "agora_token": agora_token,
     }
 
 
