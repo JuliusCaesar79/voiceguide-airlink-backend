@@ -17,5 +17,5 @@ class License(Base):
     created_at = Column(DateTime(timezone=False), default=datetime.utcnow, nullable=False)
 
     __table_args__ = (
-        CheckConstraint("max_listeners IN (10,25,35,100)", name="ck_license_max_listeners_allowed"),
+        CheckConstraint("max_listeners IN (5,10,15,25,35,50,100)", name="ck_license_max_listeners_allowed"),
     )

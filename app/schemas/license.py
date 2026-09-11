@@ -10,10 +10,10 @@ from pydantic import BaseModel, Field
 class LicenseBase(BaseModel):
     code: str = Field(..., min_length=3, max_length=64)
 
-    # Tagli consentiti dal vincolo di DB: 10, 25, 35, 100
+    # Tagli consentiti dal vincolo di DB: 5, 10, 15, 25, 35, 50, 100 (10 resta valido per compatibilità storica)
     max_listeners: int = Field(
         10,
-        description="Numero massimo ascoltatori. Valori consentiti: 10, 25, 35, 100."
+        description="Numero massimo ascoltatori. Valori consentiti: 5, 10, 15, 25, 35, 50, 100."
     )
 
     # Durata di default allineata al modello: 240 minuti (4h)
