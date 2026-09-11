@@ -14,7 +14,7 @@ from app.core.session_end import end_session_logic  # NEW: usa la logica central
 PIN_GENERATION_TRIES = 6
 
 # Set coerente con il vincolo DB (ck_license_max_listeners_allowed)
-ALLOWED_MAX_LISTENERS = {10, 25, 35, 100}
+ALLOWED_MAX_LISTENERS = {5, 10, 15, 25, 35, 50, 100}
 
 # =========================
 #  LOOKUP / ACTIVATION
