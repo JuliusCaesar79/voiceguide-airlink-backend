@@ -289,10 +289,11 @@ def start_session_endpoint(
 def join_pin_endpoint(
     pin: str,
     display_name: str | None = None,
+    listener_id: str | None = None,
     db: Session = Depends(get_db),
     background_tasks: BackgroundTasks = None,
 ):
-    listener, err = license_crud.join_session_by_pin(db, pin, display_name)
+    listener, err = license_crud.join_session_by_pin(db, pin, display_name, listener_id)
     if err:
         mapping = {
             "session_not_found": (status.HTTP_404_NOT_FOUND, "Session not found"),

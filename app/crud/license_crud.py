@@ -1,4 +1,5 @@
 # app/crud/license_crud.py
+import uuid
 from typing import Optional, Dict, Any, List, Tuple
 from datetime import timedelta
 from sqlalchemy.orm import Session
@@ -172,7 +173,22 @@ def start_session_for_license(
     return session, None
 
 
-def join_session_by_pin(db: Session, pin: str, display_name: str = None):
+def join_session_by_pin(
+    db: Session,
+    pin: str,
+    display_name: str = None,
+    listener_id: str = None,
+):
+    """
+    Ingresso ospite tramite PIN.
+
+    - Il limite max_listeners conta solo gli ospiti ancora collegati
+      (is_connected=True): chi è uscito libera il suo posto.
+    - Rientro idempotente: se l'app passa il listener_id ricevuto al primo
+      ingresso (stessa sessione), riusiamo quel listener invece di crearne
+      uno nuovo, così un ospite che chiude e riapre l'app non occupa un
+      secondo posto.
+    """
     session = (
         db.query(SessionModel)
         .filter(SessionModel.pin == pin, SessionModel.is_active.is_(True))
@@ -188,9 +204,39 @@ def join_session_by_pin(db: Session, pin: str, display_name: str = None):
         db.commit()
         return None, "session_expired"
 
-    listeners_count = db.query(Listener).filter(Listener.session_id == session.id).count()
-    if listeners_count >= session.max_listeners:
+    existing = None
+    if listener_id:
+        try:
+            listener_uuid = uuid.UUID(str(listener_id))
+        except ValueError:
+            listener_uuid = None  # id non valido: trattato come nuovo ingresso
+        if listener_uuid is not None:
+            existing = (
+                db.query(Listener)
+                .filter(Listener.id == listener_uuid, Listener.session_id == session.id)
+                .first()
+            )
+
+    if existing is not None and existing.is_connected:
+        # Già collegato (es. app chiusa senza "Esci"): stesso posto
+        return existing, None
+
+    connected_count = (
+        db.query(Listener)
+        .filter(Listener.session_id == session.id, Listener.is_connected.is_(True))
+        .count()
+    )
+    if connected_count >= session.max_listeners:
         return None, "session_full"
+
+    if existing is not None:
+        # Era uscito con "Esci" e rientra: riattiviamo lo stesso listener
+        existing.is_connected = True
+        existing.left_at = None
+        db.add(existing)
+        db.commit()
+        db.refresh(existing)
+        return existing, None
 
     listener = Listener(session_id=session.id, display_name=display_name)
     db.add(listener)
