@@ -1,5 +1,6 @@
 # app/api/admin.py
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -82,6 +83,29 @@ def admin_create_license(
     db.refresh(lic)
 
     return lic
+
+
+# ===== LICENSES STATUS (bulk) =====
+class LicenseStatusIn(BaseModel):
+    codes: list[str] = Field(..., max_length=500)
+
+
+@router.post("/licenses/status")
+def admin_licenses_status(
+    payload: LicenseStatusIn,
+    db: Session = Depends(get_db),
+    _admin = Depends(get_current_admin),
+):
+    """
+    Stato di attivazione di più codici in una sola chiamata (dashboard admin
+    del sito: quanti dei 3 tour gratuiti ogni registrato ha davvero usato).
+    I codici sconosciuti non compaiono nella risposta.
+    """
+    codes = [c.strip() for c in payload.codes if c and c.strip()]
+    if not codes:
+        return {"items": []}
+    rows = db.query(License.code, License.activated_at).filter(License.code.in_(codes)).all()
+    return {"items": [{"code": code, "activated_at": activated_at} for code, activated_at in rows]}
 
 
 # ===== LICENSES LIST =====
