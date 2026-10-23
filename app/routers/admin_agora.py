@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 router = APIRouter(prefix="/admin/agora", tags=["Admin Agora"])
 
 AGORA_API_BASE = "https://api.agora.io/dev/v1/kicking-rule"
+AGORA_CHANNEL_USER_BASE = "https://api.agora.io/dev/v1/channel/user"
 
 
 def _require_admin(x_admin_key: Optional[str]):
@@ -68,6 +69,52 @@ def disband_channel_internal(
         }
     )
     return {"status_code": status_code, "body": text}
+
+
+def channel_audience_count_internal(*, cname: str, timeout: float = 3.0) -> Optional[int]:
+    """
+    Numero di ospiti (audience) collegati in questo momento al canale Agora.
+
+    Agora toglie da solo dal canale chi chiude l'app o perde la rete (dopo
+    ~20 s), quindi questo conteggio è affidabile anche per le versioni
+    dell'app che non avvisano il backend quando l'ospite esce.
+
+    Ritorna 0 se il canale non esiste ancora (nessuno collegato) e None se
+    Agora non risponde o mancano le credenziali: il chiamante deve allora
+    usare il conteggio del DB. Non solleva mai eccezioni.
+    """
+    try:
+        app_id = os.getenv("AGORA_APP_ID")
+        customer_id = os.getenv("AGORA_CUSTOMER_ID")
+        customer_secret = os.getenv("AGORA_CUSTOMER_SECRET")
+        if not app_id or not customer_id or not customer_secret or not cname:
+            return None
+
+        r = requests.get(
+            f"{AGORA_CHANNEL_USER_BASE}/{app_id}/{str(cname).strip()}",
+            auth=HTTPBasicAuth(customer_id, customer_secret),
+            headers={"Accept": "application/json"},
+            timeout=timeout,
+        )
+        if r.status_code != 200:
+            return None
+
+        body = r.json()
+        if not body.get("success"):
+            return None
+        data = body.get("data") or {}
+        if not data.get("channel_exist"):
+            return 0
+
+        # Profilo LIVE_BROADCASTING (quello usato dall'app): la guida è
+        # broadcaster, gli ospiti sono audience
+        if "audience_total" in data:
+            return int(data["audience_total"])
+        if "audience" in data:
+            return len(data["audience"])
+        return None
+    except Exception:
+        return None
 
 
 class KickUserBody(BaseModel):

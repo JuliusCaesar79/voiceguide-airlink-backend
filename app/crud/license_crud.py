@@ -11,6 +11,7 @@ from app.models.session import Session as SessionModel
 from app.models.listener import Listener
 from app.core.utils import gen_pin, utcnow, compute_expiry
 from app.core.session_end import end_session_logic  # NEW: usa la logica centralizzata
+from app.routers.admin_agora import channel_audience_count_internal
 
 PIN_GENERATION_TRIES = 6
 
@@ -182,8 +183,9 @@ def join_session_by_pin(
     """
     Ingresso ospite tramite PIN.
 
-    - Il limite max_listeners conta solo gli ospiti ancora collegati
-      (is_connected=True): chi è uscito libera il suo posto.
+    - Il limite max_listeners conta solo gli ospiti ancora collegati:
+      prima chiediamo ad Agora chi è nel canale, altrimenti usiamo
+      is_connected=True nel DB. Chi è uscito libera il suo posto.
     - Rientro idempotente: se l'app passa il listener_id ricevuto al primo
       ingresso (stessa sessione), riusiamo quel listener invece di crearne
       uno nuovo, così un ospite che chiude e riapre l'app non occupa un
@@ -221,11 +223,16 @@ def join_session_by_pin(
         # Già collegato (es. app chiusa senza "Esci"): stesso posto
         return existing, None
 
-    connected_count = (
-        db.query(Listener)
-        .filter(Listener.session_id == session.id, Listener.is_connected.is_(True))
-        .count()
-    )
+    # Fonte principale: chi è davvero nel canale audio secondo Agora (vale
+    # anche per le app che non avvisano quando l'ospite chiude l'app).
+    # Se Agora non risponde, ripieghiamo sugli ospiti collegati nel DB.
+    connected_count = channel_audience_count_internal(cname=session.pin)
+    if connected_count is None:
+        connected_count = (
+            db.query(Listener)
+            .filter(Listener.session_id == session.id, Listener.is_connected.is_(True))
+            .count()
+        )
     if connected_count >= session.max_listeners:
         return None, "session_full"
 
