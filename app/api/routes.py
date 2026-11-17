@@ -5,7 +5,9 @@ import os
 import logging
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
+import uuid
+
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
@@ -20,6 +22,7 @@ from app.crud import license_crud
 # Modelli
 from app.models.listener import Listener as ListenerModel
 from app.models.session import Session as SessionModel  # ⬅️ modello Session
+from app.models.license import License as LicenseModel
 
 # Log eventi (non deve mai bloccare il flusso)
 from app.core.utils import log_event
@@ -48,6 +51,52 @@ from app.api import events as events_api
 router = APIRouter(prefix="/api", tags=["airlink"])
 
 logger = logging.getLogger("airlink.api")
+
+# =====================================================================
+# PROVA GENERALE (2026-11-17)
+# Live gratuito di 5 minuti, fino a 5 ascoltatori, senza consumare licenze:
+# per fare pratica, provare con un collega o un secondo telefono, convincere
+# chi è indeciso. Si crea al volo una licenza "VG-PROVA-…" già attiva; da lì
+# il flusso è quello normale (start-session, join-pin, end-session).
+# =====================================================================
+REHEARSAL_PREFIX = "VG-PROVA-"
+REHEARSAL_MINUTES = 5
+REHEARSAL_LISTENERS = 5  # il minimo ammesso dal vincolo della tabella licenses
+REHEARSAL_PER_HOUR = 10  # per indirizzo IP, contro gli abusi
+_rehearsal_hits: dict[str, list[datetime]] = {}
+
+
+@router.post("/rehearsal", summary="Prova generale: licenza gratuita di 5 minuti")
+def create_rehearsal(request: Request, db: Session = Depends(get_db)):
+    ip = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip() or (
+        request.client.host if request.client else "?"
+    )
+    now = datetime.utcnow()
+    recent = [t for t in _rehearsal_hits.get(ip, []) if now - t < timedelta(hours=1)]
+    if len(recent) >= REHEARSAL_PER_HOUR:
+        raise HTTPException(status_code=429, detail="Too many rehearsals")
+    recent.append(now)
+    _rehearsal_hits[ip] = recent
+
+    lic = LicenseModel(
+        code=f"{REHEARSAL_PREFIX}{uuid.uuid4().hex[:8].upper()}",
+        duration_minutes=REHEARSAL_MINUTES,
+        max_listeners=REHEARSAL_LISTENERS,
+        is_active=True,
+        activated_at=now,
+    )
+    db.add(lic)
+    db.commit()
+    db.refresh(lic)
+    try:
+        log_event(db, "rehearsal_created", f"code={lic.code}")
+    except Exception:
+        pass
+    return {
+        "code": lic.code,
+        "max_guests": REHEARSAL_LISTENERS,
+        "duration_minutes": REHEARSAL_MINUTES,
+    }
 
 
 # =====================================================================
@@ -85,6 +134,9 @@ def _queue_event_if_ready(
 ) -> None:
     try:
         if queue_event is None:
+            return
+        # Prove generali: niente eventi verso sito/admin (non sono tour veri)
+        if str(payload.get("license_code") or "").startswith(REHEARSAL_PREFIX):
             return
         if not _table_exists(db, "event_logs"):
             return
@@ -266,6 +318,8 @@ def start_session_endpoint(
     )
 
     try:
+        if license_code.startswith(REHEARSAL_PREFIX):
+            return session  # prova generale: nessuna notifica all'admin
         n = Notifier()
         n.notify(
             "Session Started",
