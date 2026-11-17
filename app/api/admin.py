@@ -104,8 +104,18 @@ def admin_licenses_status(
     codes = [c.strip() for c in payload.codes if c and c.strip()]
     if not codes:
         return {"items": []}
-    rows = db.query(License.code, License.activated_at).filter(License.code.in_(codes)).all()
-    return {"items": [{"code": code, "activated_at": activated_at} for code, activated_at in rows]}
+    rows = (
+        db.query(License.code, License.activated_at, License.is_active)
+        .filter(License.code.in_(codes))
+        .all()
+    )
+    # is_active aggiunto il 2026-11-18 per "Le mie licenze" nell'app (in corso / usata)
+    return {
+        "items": [
+            {"code": code, "activated_at": activated_at, "is_active": bool(is_active)}
+            for code, activated_at, is_active in rows
+        ]
+    }
 
 
 # ===== LICENSES LIST =====
