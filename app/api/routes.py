@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Request
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Request, Header
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
@@ -41,6 +41,7 @@ from app.services.notify import Notifier
 
 # Segnali silenziosi degli ospiti durante il live (in memoria)
 from app.core import live_signals
+from app.core.supabase_auth import user_id_from_bearer
 from pydantic import BaseModel
 
 # Event Bus (best-effort)
@@ -265,6 +266,7 @@ def start_session_endpoint(
     max_listeners: int | None = None,
     db: Session = Depends(get_db),
     background_tasks: BackgroundTasks = None,
+    authorization: str | None = Header(default=None),
 ):
     lic = license_crud.get_license_by_code(db, license_code)
     if not lic:
@@ -285,6 +287,18 @@ def start_session_endpoint(
         }
         sc, msg = mapping.get(err, (status.HTTP_500_INTERNAL_SERVER_ERROR, err))
         raise HTTPException(status_code=sc, detail=msg)
+
+    # Guida collegata al live (solo se il token del suo account è valido)
+    guide_uid = user_id_from_bearer(authorization)
+    if guide_uid:
+        try:
+            session.guide_user_id = guide_uid
+            db.add(session)
+            db.commit()
+            db.refresh(session)
+        except Exception:
+            db.rollback()
+            logger.exception("guide_user_id non salvato per la sessione %s", session.id)
 
     try:
         log_event(
@@ -398,6 +412,8 @@ def join_pin_endpoint(
         "session_id": str(listener.session_id),
         "joined_at": listener.joined_at,
         "agora_token": agora_token,
+        # Ricordo del tour: chi è la guida (None se il live è partito senza account)
+        "guide_user_id": getattr(listener.session, "guide_user_id", None),
     }
 
 

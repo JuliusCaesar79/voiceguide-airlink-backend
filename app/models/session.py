@@ -62,6 +62,10 @@ class Session(Base):
         index=True,
     )
 
+    # Account della guida (id utente Supabase) se il live è partito dall'app
+    # con l'accesso fatto: serve a recensioni e "Segui la guida".
+    guide_user_id = Column(String(36), nullable=True)
+
     # --- RELAZIONI -----------------------------------------------------
     # Backref verso License
     license = relationship("License", backref="sessions")
