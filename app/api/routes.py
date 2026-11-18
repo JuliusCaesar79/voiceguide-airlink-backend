@@ -616,6 +616,8 @@ def get_session_status_endpoint(
         "remaining_seconds": remaining_seconds,
         # Segnali silenziosi recenti: quante persone per tipo
         "signals": live_signals.counts(str(session.id)),
+        # Totali dall'inizio (riepilogo di fine tour)
+        "signals_total": live_signals.totals(str(session.id)),
     }
 
 

@@ -27,6 +27,8 @@ COOLDOWN = 5
 _lock = threading.Lock()
 # session_id -> kind -> listener_id -> timestamp
 _store: dict[str, dict[str, dict[str, float]]] = {}
+# session_id -> kind -> quanti segnali in tutto (per il riepilogo di fine tour)
+_totals: dict[str, dict[str, int]] = {}
 
 
 def _prune(session: dict[str, dict[str, float]], now: float) -> None:
@@ -47,6 +49,8 @@ def add(session_id: str, listener_id: str, kind: str) -> bool:
         if last is not None and now - last < COOLDOWN:
             return False
         session[kind][listener_id] = now
+        tot = _totals.setdefault(session_id, {k: 0 for k in KINDS})
+        tot[kind] += 1
         return True
 
 
@@ -58,6 +62,11 @@ def counts(session_id: str) -> dict[str, int]:
             return {k: 0 for k in KINDS}
         _prune(session, now)
         return {k: len(session[k]) for k in KINDS}
+
+
+def totals(session_id: str) -> dict[str, int]:
+    with _lock:
+        return dict(_totals.get(session_id) or {k: 0 for k in KINDS})
 
 
 def clear(session_id: str, kind: str | None = None) -> None:
@@ -73,3 +82,4 @@ def forget(session_id: str) -> None:
     """A fine sessione."""
     with _lock:
         _store.pop(session_id, None)
+        _totals.pop(session_id, None)
