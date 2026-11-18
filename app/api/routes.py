@@ -39,6 +39,10 @@ from app.core.agora_token import generate_rtc_token, ROLE_PUBLISHER, ROLE_SUBSCR
 # Notifiche admin
 from app.services.notify import Notifier
 
+# Segnali silenziosi degli ospiti durante il live (in memoria)
+from app.core import live_signals
+from pydantic import BaseModel
+
 # Event Bus (best-effort)
 try:
     from app.services.event_bus import queue_event
@@ -530,6 +534,45 @@ def end_session_endpoint(
         {"session_id": session_id},
     )
 
+    live_signals.forget(str(session.id))
+
+    return {"ok": True}
+
+
+# =====================================================================
+# SEGNALI SILENZIOSI (2026-11-18)
+# L'ospite: "Non sento", "Più piano", "Ho una domanda", "👍".
+# La guida li vede in /sessions/{id}/status ("signals") e li può azzerare.
+# =====================================================================
+class SignalIn(BaseModel):
+    kind: str
+
+
+class SignalClearIn(BaseModel):
+    kind: str | None = None
+
+
+@router.post("/listeners/{listener_id}/signal", summary="Segnale silenzioso alla guida (ospite)")
+def send_listener_signal(listener_id: str, body: SignalIn, db: Session = Depends(get_db)):
+    if body.kind not in live_signals.KINDS:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unknown signal")
+    try:
+        lid = uuid.UUID(listener_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Listener not found")
+    listener = db.query(ListenerModel).filter(ListenerModel.id == lid).first()
+    if listener is None or not listener.is_connected:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Listener not found")
+    session = db.query(SessionModel).filter(SessionModel.id == listener.session_id).first()
+    if session is None or not session.is_active or session.expires_at <= datetime.utcnow():
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Session not active")
+    accepted = live_signals.add(str(session.id), str(listener.id), body.kind)
+    return {"ok": True, "accepted": accepted}
+
+
+@router.post("/sessions/{session_id}/signals/clear", summary="La guida azzera i segnali visti")
+def clear_session_signals(session_id: str, body: SignalClearIn | None = None):
+    live_signals.clear(session_id, body.kind if body else None)
     return {"ok": True}
 
 
@@ -571,6 +614,8 @@ def get_session_status_endpoint(
         "ended_at": session.ended_at,
         "expires_at": session.expires_at,
         "remaining_seconds": remaining_seconds,
+        # Segnali silenziosi recenti: quante persone per tipo
+        "signals": live_signals.counts(str(session.id)),
     }
 
 
