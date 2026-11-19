@@ -118,6 +118,34 @@ def admin_licenses_status(
     }
 
 
+# ===== BLOCK BY CODE (rimborso) =====
+class LicenseBlockIn(BaseModel):
+    code: str = Field(..., min_length=1, max_length=64)
+
+
+@router.post("/licenses/block")
+def admin_block_license(
+    payload: LicenseBlockIn,
+    db: Session = Depends(get_db),
+    _admin = Depends(get_current_admin),
+):
+    """
+    Blocca una licenza per codice (2026-11-19): la chiama il sito quando un
+    acquisto in app viene rimborsato. La licenza risulta "già usata", quindi
+    non si può più attivare. Un live già in corso NON viene interrotto (i
+    turisti in ascolto non c'entrano). Idempotente.
+    """
+    lic = license_crud.get_license_by_code(db, payload.code.strip())
+    if not lic:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="License not found")
+    lic.is_active = False
+    if lic.activated_at is None:
+        lic.activated_at = license_crud.utcnow()
+    db.add(lic)
+    db.commit()
+    return {"ok": True, "code": lic.code, "status": "blocked"}
+
+
 # ===== LICENSES LIST =====
 @router.get("/licenses", response_model=AdminLicensesOut)
 def admin_licenses(
